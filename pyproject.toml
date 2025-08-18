@@ -1,0 +1,12 @@
+[tool.black]
+line-length = 79
+target-version = ["py312"]
+
+[tool.mypy]
+files = "metapkg"
+python_version = "3.12"
+follow_imports = "normal"
+ignore_missing_imports = true
+show_error_codes = true
+strict = true
+namespace_packages = true
