@@ -1,0 +1,99 @@
+FROM @@uv_image AS uv
+
+FROM scratch AS rootfs
+
+# Rocky Linux 8 is the build root that establishes the glibc floor.
+FROM @@base_image AS builder
+
+COPY --from=uv /uv /usr/local/bin/uv
+
+RUN dnf install -y --setopt=install_weak_deps=False dnf-plugins-core \
+    && dnf config-manager --set-enabled powertools \
+    && dnf install -y --setopt=install_weak_deps=False epel-release \
+    && dnf install -y --setopt=install_weak_deps=False \
+        autoconf \
+        automake \
+        binutils \
+        bison \
+        bzip2 \
+        cmake \
+        diffutils \
+        file \
+        findutils \
+        flex \
+        gcc \
+        gcc-c++ \
+        gettext \
+        git-core \
+        gzip \
+        libstdc++-static \
+        libtool \
+        make \
+        ninja-build \
+        patch \
+        patchelf \
+        perl \
+        pkgconf-pkg-config \
+        tar \
+        which \
+        xz \
+        zstd \
+    && dnf clean all \
+    && rm -rf \
+        /usr/share/doc \
+        /usr/share/info \
+        /usr/share/man \
+        /usr/share/locale \
+        /usr/lib/python3.6 \
+        /usr/lib/rpm \
+        /usr/lib64/libdnf* \
+        /usr/lib64/librpm* \
+        /usr/lib64/python3.6 \
+        /usr/lib64/rpm-plugins \
+        /usr/libexec/platform-python* \
+        /var/lib/dnf \
+        /var/lib/rpm \
+        /var/cache/dnf \
+        /var/log/dnf* \
+        /var/log/yum.*
+
+RUN case "$(uname -m)" in \
+        x86_64) sccache_arch=x86_64; sccache_sha256=@@sccache_x86_64_sha256 ;; \
+        aarch64) sccache_arch=aarch64; sccache_sha256=@@sccache_aarch64_sha256 ;; \
+        *) echo "unsupported sccache architecture: $(uname -m)" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL --show-error \
+        "https://github.com/mozilla/sccache/releases/download/v@@sccache_version/sccache-v@@sccache_version-${sccache_arch}-unknown-linux-musl.tar.gz" \
+        -o /tmp/sccache.tar.gz \
+    && echo "$sccache_sha256  /tmp/sccache.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/sccache.tar.gz -C /tmp \
+    && install -m 0755 \
+        "/tmp/sccache-v@@sccache_version-${sccache_arch}-unknown-linux-musl/sccache" \
+        /usr/local/bin/sccache \
+    && mkdir -p /usr/share/licenses/sccache \
+    && curl -fsSL --show-error \
+        https://raw.githubusercontent.com/mozilla/sccache/v@@sccache_version/LICENSE \
+        -o /usr/share/licenses/sccache/LICENSE \
+    && echo '@@sccache_license_sha256  /usr/share/licenses/sccache/LICENSE' \
+        | sha256sum -c - \
+    && rm -rf /tmp/sccache*
+
+RUN find /usr/lib/locale -mindepth 1 -maxdepth 1 \
+        ! -name C.utf8 -exec rm -rf '{}' + \
+    && rm -f \
+        /usr/bin/dnf* \
+        /usr/bin/rpm* \
+        /usr/bin/yum*
+
+ENV UV_PYTHON_INSTALL_DIR=/opt/python
+
+@@python_setup
+
+ENV PATH=/opt/venv/bin:/usr/local/bin:/usr/bin:/bin
+
+RUN getconf GNU_LIBC_VERSION | grep -Fx 'glibc @@glibc_baseline'
+
+FROM rootfs
+COPY --from=builder / /
+
+ENV PATH=/opt/venv/bin:/usr/local/bin:/usr/bin:/bin

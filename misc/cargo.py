@@ -1,11 +1,18 @@
-import toml
+from typing import Any
+
 import argparse
 import csv
 import pathlib
 import sys
 
+import toml
 
-def main():
+
+def write_line(message: str = "") -> None:
+    sys.stdout.write(f"{message}\n")
+
+
+def main() -> None:
     csv.field_size_limit(sys.maxsize)
 
     parser = argparse.ArgumentParser()
@@ -22,28 +29,30 @@ def main():
     data = toml.load(args.cargo_lock_file)
     db_path = pathlib.Path(args.cargo_io_dump) / "data"
 
-    crates = {}
-    crates_id_to_name = {}
+    crates: dict[str, dict[str, Any]] = {}
+    crates_id_to_name: dict[str, str] = {}
 
-    with open(db_path / "crates.csv", "rt", newline="") as csvfile:
+    with (db_path / "crates.csv").open(encoding="utf-8", newline="") as csvfile:
         reader = csv.reader(csvfile, delimiter=",")
         header = next(reader)
         for row in reader:
-            crate_info = dict(zip(header, row))
+            crate_info = dict(zip(header, row, strict=True))
             crates[crate_info["name"]] = crate_info
             crates_id_to_name[crate_info["id"]] = crate_info["name"]
 
-    with open(db_path / "versions.csv", "rt", newline="") as csvfile:
+    with (db_path / "versions.csv").open(
+        encoding="utf-8", newline=""
+    ) as csvfile:
         reader = csv.reader(csvfile, delimiter=",")
         header = next(reader)
         for row in reader:
-            crate_info = dict(zip(header, row))
+            crate_info = dict(zip(header, row, strict=True))
             name = crates_id_to_name[crate_info["crate_id"]]
             lic = crate_info["license"]
             crates[name].setdefault("license", {})[crate_info["num"]] = lic
 
-    failed_for = {}
-    deps = {}
+    failed_for: dict[str, str] = {}
+    deps: dict[str, str] = {}
     for package in data["package"]:
         name, ver = package["name"], package["version"]
 
@@ -57,13 +66,13 @@ def main():
             except KeyError:
                 failed_for[name] = f"could not find license for version {ver}"
 
-    print("Dependencies:\n")
-    for name, license in deps.items():
-        print(f"{name}: {license}")
+    write_line("Dependencies:\n")
+    for name, license_name in deps.items():
+        write_line(f"{name}: {license_name}")
     if failed_for:
-        print("\n\nFailed to resolve")
+        write_line("\n\nFailed to resolve")
         for name, reason in failed_for.items():
-            print(f"{name}: {reason}")
+            write_line(f"{name}: {reason}")
 
 
 if __name__ == "__main__":

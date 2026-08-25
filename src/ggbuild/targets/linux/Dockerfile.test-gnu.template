@@ -1,0 +1,51 @@
+FROM @@busybox_image AS busybox
+
+RUN apk add --no-cache busybox-static=@@busybox_version bzip2 curl \
+    && test -z "$(scanelf --needed --format '%n' --quiet \
+        /bin/busybox.static)" \
+    && case "$(uname -m)" in \
+        aarch64) busybox_sha256=@@busybox_aarch64_sha256 ;; \
+        x86_64) busybox_sha256=@@busybox_x86_64_sha256 ;; \
+        *) exit 1 ;; \
+       esac \
+    && echo "$busybox_sha256  /bin/busybox.static" | sha256sum -c - \
+    && curl --proto '=https' --tlsv1.2 --fail --location --silent \
+        --show-error @@busybox_source -o /tmp/busybox.tar.bz2 \
+    && echo '@@busybox_source_sha256  /tmp/busybox.tar.bz2' \
+        | sha256sum -c - \
+    && mkdir -p /out/licenses \
+    && cp /bin/busybox.static /out/busybox \
+    && tar -xOf /tmp/busybox.tar.bz2 busybox-@@busybox_upstream_version/LICENSE \
+        > /out/licenses/BUSYBOX-GPL-2.0-only
+
+FROM @@base_image AS rootfs
+
+COPY --from=busybox /out/busybox /rootfs/bin/busybox
+COPY --from=busybox /out/licenses /rootfs/usr/share/licenses/busybox
+
+RUN set -eux; \
+    for path in $(rpm -ql glibc libgcc); do \
+        case "$path" in \
+            /etc/gai.conf|/etc/ld.so.cache|/etc/ld.so.conf|\
+/etc/ld.so.conf.d/*|/etc/nsswitch.conf|/lib/*|/lib64/*|\
+/usr/share/licenses/glibc/*|/usr/share/licenses/libgcc/*) \
+                if test -f "$path" || test -L "$path"; then \
+                    cp -a --parents "$path" /rootfs; \
+                fi \
+                ;; \
+        esac; \
+    done; \
+    printf '%s\n' "$(rpm -q glibc)" "$(rpm -q libgcc)" \
+        > /rootfs/usr/share/licenses/rocky-runtime-packages; \
+    for applet in sh dirname mkdir rmdir diff; do \
+        ln -s busybox "/rootfs/bin/$applet"; \
+    done
+
+FROM scratch
+
+COPY --from=rootfs /rootfs /
+
+LABEL org.opencontainers.image.description="Minimal Rocky 8 glibc ABI-floor test root" \
+      org.opencontainers.image.licenses="GPL-2.0-only AND LicenseRef-Rocky-runtime-packages" \
+      org.opencontainers.image.busybox.source="@@busybox_source" \
+      org.opencontainers.image.busybox.version="@@busybox_version"

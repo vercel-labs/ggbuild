@@ -17,6 +17,7 @@ __pycache__/
 /*.egg-info
 /dist
 /.cache
+/.ggt_cache
 docs/_build
 /AUTHORS
 /ChangeLog
@@ -25,4 +26,5 @@ docs/_build
 /.vscode
 /.mypy_cache
 .dmypy.json
-/.venv
+/.venv*
+/.codex
