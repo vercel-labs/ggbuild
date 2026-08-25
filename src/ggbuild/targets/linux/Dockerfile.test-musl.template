@@ -1,0 +1,46 @@
+FROM @@base_image AS rootfs
+
+RUN apk add --no-cache busybox-static=@@busybox_version bzip2 curl \
+    && test -z "$(scanelf --needed --format '%n' --quiet \
+        /bin/busybox.static)" \
+    && case "$(uname -m)" in \
+        aarch64) busybox_sha256=@@busybox_aarch64_sha256 ;; \
+        x86_64) busybox_sha256=@@busybox_x86_64_sha256 ;; \
+        *) exit 1 ;; \
+       esac \
+    && echo "$busybox_sha256  /bin/busybox.static" | sha256sum -c - \
+    && curl --proto '=https' --tlsv1.2 --fail --location --silent \
+        --show-error @@busybox_source -o /tmp/busybox.tar.bz2 \
+    && echo '@@busybox_source_sha256  /tmp/busybox.tar.bz2' \
+        | sha256sum -c - \
+    && curl --proto '=https' --tlsv1.2 --fail --location --silent \
+        --show-error @@musl_source -o /tmp/musl.tar.gz \
+    && echo '@@musl_source_sha256  /tmp/musl.tar.gz' | sha256sum -c - \
+    && mkdir -p /rootfs/bin /rootfs/lib \
+        /rootfs/usr/share/licenses/busybox \
+        /rootfs/usr/share/licenses/musl \
+    && cp /bin/busybox.static /rootfs/bin/busybox \
+    && for path in $(apk info -L musl | sed -n '/^lib\//p'); do \
+        if test -f "/$path" || test -L "/$path"; then \
+            cp -a "/$path" "/rootfs/$path"; \
+        fi; \
+       done \
+    && tar -xOf /tmp/busybox.tar.bz2 busybox-@@busybox_upstream_version/LICENSE \
+        > /rootfs/usr/share/licenses/busybox/BUSYBOX-GPL-2.0-only \
+    && tar -xOf /tmp/musl.tar.gz musl-@@musl_version/COPYRIGHT \
+        > /rootfs/usr/share/licenses/musl/COPYRIGHT \
+    && apk info -v musl > /rootfs/usr/share/licenses/musl/package-version \
+    && for applet in sh dirname mkdir rmdir diff; do \
+        ln -s busybox "/rootfs/bin/$applet"; \
+       done
+
+FROM scratch
+
+COPY --from=rootfs /rootfs /
+
+LABEL org.opencontainers.image.description="Minimal Alpine 3.16 musl ABI-floor test root" \
+      org.opencontainers.image.licenses="GPL-2.0-only AND MIT" \
+      org.opencontainers.image.busybox.source="@@busybox_source" \
+      org.opencontainers.image.busybox.version="@@busybox_version" \
+      org.opencontainers.image.musl.source="@@musl_source" \
+      org.opencontainers.image.musl.version="@@musl_version"

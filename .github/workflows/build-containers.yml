@@ -1,0 +1,304 @@
+name: Build ggbuild Linux Actions
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "src/ggbuild/targets/linux/Dockerfile.gnu.template"
+      - "src/ggbuild/targets/linux/Dockerfile.musl.template"
+      - "src/ggbuild/targets/linux/Dockerfile.test-gnu.template"
+      - "src/ggbuild/targets/linux/Dockerfile.test-musl.template"
+      - "src/ggbuild/targets/linux/action-entrypoint.sh"
+      - "src/ggbuild/targets/linux/dockerfile.py"
+      - "src/ggbuild/tools/template.py"
+  pull_request:
+    paths:
+      - "src/ggbuild/targets/linux/Dockerfile.gnu.template"
+      - "src/ggbuild/targets/linux/Dockerfile.musl.template"
+      - "src/ggbuild/targets/linux/Dockerfile.test-gnu.template"
+      - "src/ggbuild/targets/linux/Dockerfile.test-musl.template"
+      - "src/ggbuild/targets/linux/action-entrypoint.sh"
+      - "src/ggbuild/targets/linux/dockerfile.py"
+      - "src/ggbuild/tools/template.py"
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      gnu_repository: ${{ steps.gnu.outputs.repository }}
+      gnu_tag: ${{ steps.gnu.outputs.tag }}
+      musl_repository: ${{ steps.musl.outputs.repository }}
+      musl_tag: ${{ steps.musl.outputs.tag }}
+      test_gnu_repository: ${{ steps.test-gnu.outputs.repository }}
+      test_gnu_tag: ${{ steps.test-gnu.outputs.tag }}
+      test_musl_repository: ${{ steps.test-musl.outputs.repository }}
+      test_musl_tag: ${{ steps.test-musl.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - run: uv sync --frozen --no-default-groups
+      - id: gnu
+        name: Render GNU Action context
+        run: >-
+          uv run --frozen --no-default-groups ggbuild
+          ci render-action-context
+          --target x86_64-unknown-linux-gnu
+          --output .cache/action-contexts/linux-gnu
+          --github-output "$GITHUB_OUTPUT"
+      - id: musl
+        name: Render musl Action context
+        run: >-
+          uv run --frozen --no-default-groups ggbuild
+          ci render-action-context
+          --target x86_64-unknown-linux-musl
+          --output .cache/action-contexts/linux-musl
+          --github-output "$GITHUB_OUTPUT"
+      - id: test-gnu
+        name: Render GNU runtime-test context
+        run: >-
+          uv run --frozen --no-default-groups ggbuild
+          ci render-bare-test-context
+          --target gnu
+          --output .cache/action-contexts/test-linux-gnu
+          --github-output "$GITHUB_OUTPUT"
+      - id: test-musl
+        name: Render musl runtime-test context
+        run: >-
+          uv run --frozen --no-default-groups ggbuild
+          ci render-bare-test-context
+          --target musl
+          --output .cache/action-contexts/test-linux-musl
+          --github-output "$GITHUB_OUTPUT"
+      - name: Upload Action contexts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: action-contexts
+          path: .cache/action-contexts
+          if-no-files-found: error
+          retention-days: 1
+
+  validate:
+    if: github.event_name == 'pull_request'
+    needs: [prepare]
+    permissions: {}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - environment: linux-gnu
+            kind: gnu
+            runner: ubuntu-latest
+            architecture: amd64
+            platform: linux/amd64
+          - environment: linux-gnu
+            kind: gnu
+            runner: ubuntu-24.04-arm
+            architecture: arm64
+            platform: linux/arm64
+          - environment: linux-musl
+            kind: musl
+            runner: ubuntu-latest
+            architecture: amd64
+            platform: linux/amd64
+          - environment: linux-musl
+            kind: musl
+            runner: ubuntu-24.04-arm
+            architecture: arm64
+            platform: linux/arm64
+          - environment: test-linux-gnu
+            kind: test-gnu
+            runner: ubuntu-latest
+            architecture: amd64
+            platform: linux/amd64
+          - environment: test-linux-gnu
+            kind: test-gnu
+            runner: ubuntu-24.04-arm
+            architecture: arm64
+            platform: linux/arm64
+          - environment: test-linux-musl
+            kind: test-musl
+            runner: ubuntu-latest
+            architecture: amd64
+            platform: linux/amd64
+          - environment: test-linux-musl
+            kind: test-musl
+            runner: ubuntu-24.04-arm
+            architecture: arm64
+            platform: linux/arm64
+    runs-on: ${{ matrix.runner }}
+    env:
+      REGISTRY_IMAGE: ${{ matrix.kind == 'gnu' && needs.prepare.outputs.gnu_repository || matrix.kind == 'musl' && needs.prepare.outputs.musl_repository || matrix.kind == 'test-gnu' && needs.prepare.outputs.test_gnu_repository || needs.prepare.outputs.test_musl_repository }}
+      IMAGE_TAG: ${{ matrix.kind == 'gnu' && needs.prepare.outputs.gnu_tag || matrix.kind == 'musl' && needs.prepare.outputs.musl_tag || matrix.kind == 'test-gnu' && needs.prepare.outputs.test_gnu_tag || needs.prepare.outputs.test_musl_tag }}
+    steps:
+      - name: Download Action contexts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: action-contexts
+          path: .cache/action-contexts
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+        with:
+          cache-binary: false
+      - name: Validate native Action image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .cache/action-contexts/${{ matrix.environment }}
+          platforms: ${{ matrix.platform }}
+          load: true
+          tags: ${{ env.REGISTRY_IMAGE }}:${{ env.IMAGE_TAG }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=registry,ref=${{ env.REGISTRY_IMAGE }}:cache-${{ matrix.architecture }}
+
+  publish:
+    if: github.event_name != 'pull_request'
+    needs: [prepare]
+    permissions:
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - environment: linux-gnu
+            kind: gnu
+            runner: ubuntu-latest
+            architecture: amd64
+            platform: linux/amd64
+          - environment: linux-gnu
+            kind: gnu
+            runner: ubuntu-24.04-arm
+            architecture: arm64
+            platform: linux/arm64
+          - environment: linux-musl
+            kind: musl
+            runner: ubuntu-latest
+            architecture: amd64
+            platform: linux/amd64
+          - environment: linux-musl
+            kind: musl
+            runner: ubuntu-24.04-arm
+            architecture: arm64
+            platform: linux/arm64
+          - environment: test-linux-gnu
+            kind: test-gnu
+            runner: ubuntu-latest
+            architecture: amd64
+            platform: linux/amd64
+          - environment: test-linux-gnu
+            kind: test-gnu
+            runner: ubuntu-24.04-arm
+            architecture: arm64
+            platform: linux/arm64
+          - environment: test-linux-musl
+            kind: test-musl
+            runner: ubuntu-latest
+            architecture: amd64
+            platform: linux/amd64
+          - environment: test-linux-musl
+            kind: test-musl
+            runner: ubuntu-24.04-arm
+            architecture: arm64
+            platform: linux/arm64
+    runs-on: ${{ matrix.runner }}
+    env:
+      REGISTRY_IMAGE: ${{ matrix.kind == 'gnu' && needs.prepare.outputs.gnu_repository || matrix.kind == 'musl' && needs.prepare.outputs.musl_repository || matrix.kind == 'test-gnu' && needs.prepare.outputs.test_gnu_repository || needs.prepare.outputs.test_musl_repository }}
+    steps:
+      - name: Download Action contexts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: action-contexts
+          path: .cache/action-contexts
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+        with:
+          cache-binary: false
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: build
+        name: Build and push by digest
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .cache/action-contexts/${{ matrix.environment }}
+          platforms: ${{ matrix.platform }}
+          tags: ${{ env.REGISTRY_IMAGE }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=registry,ref=${{ env.REGISTRY_IMAGE }}:cache-${{ matrix.architecture }}
+          cache-to: type=registry,ref=${{ env.REGISTRY_IMAGE }}:cache-${{ matrix.architecture }},mode=max
+          outputs: type=image,push-by-digest=true,name-canonical=true,push=true
+      - name: Export digest
+        env:
+          BUILD_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p "${RUNNER_TEMP}/digests"
+          touch "${RUNNER_TEMP}/digests/${BUILD_DIGEST#sha256:}"
+      - name: Upload digest
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: digests-${{ matrix.environment }}-${{ matrix.architecture }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    if: github.event_name != 'pull_request'
+    needs: [prepare, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    strategy:
+      matrix:
+        include:
+          - environment: linux-gnu
+            kind: gnu
+          - environment: linux-musl
+            kind: musl
+          - environment: test-linux-gnu
+            kind: test-gnu
+          - environment: test-linux-musl
+            kind: test-musl
+    env:
+      REGISTRY_IMAGE: ${{ matrix.kind == 'gnu' && needs.prepare.outputs.gnu_repository || matrix.kind == 'musl' && needs.prepare.outputs.musl_repository || matrix.kind == 'test-gnu' && needs.prepare.outputs.test_gnu_repository || needs.prepare.outputs.test_musl_repository }}
+      IMAGE_TAG: ${{ matrix.kind == 'gnu' && needs.prepare.outputs.gnu_tag || matrix.kind == 'musl' && needs.prepare.outputs.musl_tag || matrix.kind == 'test-gnu' && needs.prepare.outputs.test_gnu_tag || needs.prepare.outputs.test_musl_tag }}
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+        with:
+          cache-binary: false
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Download digests
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-${{ matrix.environment }}-*
+          merge-multiple: true
+      - name: Create and push multiarch manifest
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          sources=()
+          for digest in *; do
+            sources+=("${REGISTRY_IMAGE}@sha256:${digest}")
+          done
+          docker buildx imagetools create \
+            --tag "${REGISTRY_IMAGE}:${IMAGE_TAG}" \
+            "${sources[@]}"
