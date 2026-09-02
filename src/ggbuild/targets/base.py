@@ -221,6 +221,7 @@ class _TargetPackaging(_TargetIdentity):
         return []
 
 
+# @lat: [[packaging#Target-Native Packaging#Target Abstraction]]
 class Target(_TargetPackaging):
     def is_binary_code_file(self, build: Build, path: pathlib.Path) -> bool:
         raise NotImplementedError
@@ -952,6 +953,7 @@ class _BuildLifecycle(_BuildState):
     def uses_modern_gcc(self) -> bool:
         return self._target.uses_modern_gcc()
 
+    # @lat: [[packaging#Target-Native Packaging#Build Lifecycle and Staging]]
     def run(self) -> None:
         with stage("prepare", process="prepare", subject=str(self._root_pkg)):
             self.prepare()
@@ -1615,6 +1617,7 @@ class _BuildSources(_BuildShell):
     ) -> pathlib.Path:
         return self.get_helpers_root(relative_to=relative_to) / "sccache"
 
+    # @lat: [[packaging#Target-Native Packaging#Compiler Cache Isolation]]
     def _configure_sccache(self) -> None:
         if self._real_sccache_path is None:
             raise RuntimeError("sccache executable is not configured")
@@ -2031,6 +2034,7 @@ class _BuildDependencies(_BuildScripts):
             wd = "$(pwd -P)"
         return f"{wd}/{shlex.quote(str(path))}"
 
+    # @lat: [[packaging#Target-Native Packaging#Dependency Wiring]]
     def sh_append_pkgconfig_paths(
         self,
         args: dict[str, str | pathlib.Path | None],
@@ -2333,6 +2337,7 @@ class _BuildDependencies(_BuildScripts):
 
 
 class Build(_BuildDependencies):
+    # @lat: [[recipes#Recipes and Sources#Script-Oriented Build Hooks]]
     def sh_append_global_flags(
         self,
         args: Mapping[str, str | pathlib.Path | None] | None = None,

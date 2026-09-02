@@ -209,6 +209,7 @@ class BaseSource:
         raise NotImplementedError
 
 
+# @lat: [[recipes#Recipes and Sources#Verified Source Acquisition]]
 class HttpsSource(BaseSource):
     def __init__(
         self,
@@ -629,6 +630,7 @@ def source_for_url(
     raise ValueError(f"unsupported source URL scheme: {parts.scheme}")
 
 
+# @lat: [[recipes#Recipes and Sources#Safe Extraction]]
 def unpack(
     archive: pathlib.Path,
     dest: pathlib.Path,

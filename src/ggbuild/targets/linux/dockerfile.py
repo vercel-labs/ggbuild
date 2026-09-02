@@ -289,6 +289,7 @@ def dockerfile_template(name: str) -> DockerfileTemplate:
         ) from error
 
 
+# @lat: [[orchestration#Project Orchestration#Content-Addressed Linux Environments]]  # ruff: ignore[line-too-long]
 def docker_environment(target: str) -> LinuxDockerEnvironment:
     """Return the built-in container environment for a Linux target."""
     arch = target.partition("-")[0]

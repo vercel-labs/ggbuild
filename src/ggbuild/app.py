@@ -38,6 +38,7 @@ class App(BaseApplication):
         return io
 
 
+# @lat: [[overview#System Intent]]
 def main() -> int:
     configure_logging(logger_name="ggbuild")
     app = App()

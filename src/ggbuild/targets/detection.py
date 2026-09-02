@@ -47,6 +47,7 @@ __all__ = (
 )
 
 
+# @lat: [[overview#System Intent#Compatibility Strategy]]
 def detect_target(
     io: IO,
     *,

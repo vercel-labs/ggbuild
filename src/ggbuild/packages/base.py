@@ -964,6 +964,7 @@ class _BundledPackageResolution(BasePackage):
         )
 
 
+# @lat: [[recipes#Recipes and Sources#Registered Releases]]
 class _BundledPackageInstance(_BundledPackageResolution):
     @classmethod
     def format_version(cls, ver: poetry_version.Version) -> tuple[str, str]:
@@ -1304,6 +1305,7 @@ class _BundledPackageFiles(_BundledPackageInstance):
         return script
 
 
+# @lat: [[recipes#Recipes and Sources]]
 class BundledPackage(_BundledPackageFiles):
     def get_test_env(self, test: Test) -> Mapping[str, str]:
         """Return recipe-specific environment variables for artifact tests."""
@@ -1510,6 +1512,7 @@ class PrePackagedPackage(BundledPackage):
     pass
 
 
+# @lat: [[recipes#Recipes and Sources#Script-Oriented Build Hooks]]
 class BuildSystemMakePackage(BundledPackage):
     def get_build_script(self, build: targets.Build) -> str:
         args = self.get_make_args(build)

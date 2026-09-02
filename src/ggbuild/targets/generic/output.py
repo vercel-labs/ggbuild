@@ -82,6 +82,7 @@ _OPTIONS_WITH_VALUES = frozenset({
 })
 
 
+# @lat: [[packaging#Target-Native Packaging#Build Output Observability]]
 class BuildOutputParser:
     """Keep full build output while shortening the live status detail."""
 

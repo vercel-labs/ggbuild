@@ -160,6 +160,7 @@ def patch_variants(recipe: type[BundledPackage]) -> tuple[PatchVariant, ...]:
     return tuple(parse_patch(path) for path in paths)
 
 
+# @lat: [[maintenance#Release Maintenance#Version-Aware Patch Selection]]
 def select_patch_variants(package: BundledPackage) -> tuple[PatchVariant, ...]:
     grouped: dict[tuple[str, str], list[PatchVariant]] = {}
     for variant in patch_variants(type(package)):
@@ -496,6 +497,7 @@ def _historical_patch_commits(
     return tuple(repositories), application_patches
 
 
+# @lat: [[maintenance#Release Maintenance#Patch Rerolling]]
 def reroll_patches(
     package: BundledPackage,
     io: cleo_io.IO,

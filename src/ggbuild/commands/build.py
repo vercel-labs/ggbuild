@@ -453,6 +453,7 @@ class Build(base.Command):
     def _node_cache_policy(self, *, clean: bool) -> dict[str, str]:
         return parse_node_cache(self._node_cache_values(clean=clean))
 
+    # @lat: [[recipes#Recipes and Sources#Dependency Semantics]]
     def _resolve_deps(
         self,
         env: poetry_env.Env,
@@ -597,6 +598,7 @@ class Build(base.Command):
         }
         return package_map, graph
 
+    # @lat: [[recipes#Recipes and Sources#Dependency Semantics#Declared Cycle Escape Hatch]]  # ruff: ignore[line-too-long]
     @staticmethod
     def _sort_build_dependencies(
         package_map: dict[mpkg_base.NormalizedName, mpkg_base.BasePackage],

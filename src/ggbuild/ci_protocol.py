@@ -184,6 +184,7 @@ def digest_json(value: object) -> str:
 
 
 def tree_digest(root: pathlib.Path) -> str:
+    # @lat: [[overview#System Intent#Trust Boundaries]]
     digest = hashlib.sha256()
     if not root.exists():
         return digest.hexdigest()
@@ -267,6 +268,7 @@ def topological_layers(
     return layers
 
 
+# @lat: [[orchestration#Project Orchestration#Canonical Build Plan#Plan Validation]]  # ruff: ignore[line-too-long]
 def validate_plan(  # ruff: ignore[too-many-branches, too-many-locals, too-many-statements]
     plan: Mapping[str, Any],
 ) -> None:
@@ -589,6 +591,7 @@ def bundle_path(cache_dir: pathlib.Path, cache_key: str) -> pathlib.Path:
     return cache_dir / "bundles" / f"{cache_key}.tar.zst"
 
 
+# @lat: [[orchestration#Project Orchestration#Delta Sysroot Bundles]]
 def export_bundle(
     staging_root: pathlib.Path,
     destination: pathlib.Path,
@@ -761,6 +764,7 @@ def _extract_bundle(
     return manifest
 
 
+# @lat: [[orchestration#Project Orchestration#Bundle Validation and Merge]]
 def restore_bundle(
     bundle: pathlib.Path,
     installation_root: pathlib.Path,

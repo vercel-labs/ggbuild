@@ -53,6 +53,7 @@ def _file_entry(
     }
 
 
+# @lat: [[artifacts#Artifact Trust Pipeline#Test-to-Publication Binding]]
 def create_root_record(  # ruff: ignore[too-many-branches,too-many-locals,too-many-statements]
     node: Mapping[str, object], artifact_dir: pathlib.Path
 ) -> pathlib.Path:
@@ -404,6 +405,7 @@ def _release_body(snapshot: Mapping[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+# @lat: [[artifacts#Artifact Trust Pipeline#Complete Snapshot Publication]]
 def publish_github(  # ruff: ignore[too-many-locals]
     plan: Mapping[str, Any],
     artifacts: pathlib.Path,
@@ -502,6 +504,7 @@ def _asset_bytes(client: GitHubPublisher, asset: Mapping[str, Any]) -> bytes:
     )
 
 
+# @lat: [[artifacts#Artifact Trust Pipeline#Ordered Release Commit]]
 def _publish_snapshot(
     client: GitHubPublisher,
     snapshot: Mapping[str, Any],

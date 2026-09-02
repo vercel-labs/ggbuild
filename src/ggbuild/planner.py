@@ -250,6 +250,7 @@ def _environment_identity(
 
 
 def _project_identity(config: ProjectConfig) -> dict[str, str]:
+    # @lat: [[orchestration#Project Orchestration#Canonical Build Plan#Cache Identity]]  # ruff: ignore[line-too-long]
     config_path = config.root / "pyproject.toml"
     if not config_path.is_file():
         return {
@@ -284,6 +285,7 @@ def _closure(node_id: str, graph: dict[str, tuple[str, ...]]) -> list[str]:
     return sorted(result)
 
 
+# @lat: [[orchestration#Project Orchestration#Canonical Build Plan]]
 def create_build_plan(  # ruff: ignore[too-many-locals, too-many-statements]
     config: ProjectConfig | None = None,
     options: PlanOptions | None = None,

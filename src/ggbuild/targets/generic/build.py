@@ -474,6 +474,7 @@ class Build(targets.Build):
             "package",
         )
 
+    # @lat: [[packaging#Target-Native Packaging#Validated Resume]]
     def _validate_checkpoint_manifest(self) -> None:
         if not self._keepwork:
             return
@@ -1351,6 +1352,7 @@ class Build(targets.Build):
             if target == path:
                 sibling.unlink()
 
+    # @lat: [[packaging#Target-Native Packaging#Binary Closure and Relocatability]]  # ruff: ignore[line-too-long]
     def _fixup_binaries(
         self,
         files: list[pathlib.Path],
@@ -1428,6 +1430,7 @@ class Build(targets.Build):
                 vf,
             )
 
+    # @lat: [[artifacts#Artifact Trust Pipeline#Artifact Inventory and Sidecars]]  # ruff: ignore[line-too-long]
     def _package_side_artifacts(
         self,
         archive_name: str,

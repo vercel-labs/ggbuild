@@ -365,6 +365,7 @@ def _bare_test_environment(
     return environment
 
 
+# @lat: [[artifacts#Artifact Trust Pipeline#ABI-Floor Linux Tests]]
 def _execute_bare_linux_test_script(recipe: BundledPackage, test: Test) -> None:
     script_path = _write_test_script(recipe, test)
     root = test.get_work_root().resolve()
@@ -445,6 +446,7 @@ def _extract_test_data_overlay(
     return _test_data_root(installation, details)
 
 
+# @lat: [[artifacts#Artifact Trust Pipeline#Recipe-Driven Artifact Tests]]
 def run_test(  # ruff: ignore[too-many-locals]
     archive: pathlib.Path,
     *,

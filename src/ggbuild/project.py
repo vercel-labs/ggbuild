@@ -157,6 +157,7 @@ def _target(raw: object) -> TargetConfig:
     )
 
 
+# @lat: [[orchestration#Project Orchestration#Project and Target Policy]]
 def load_project(  # ruff: ignore[too-many-branches, too-many-locals,too-many-statements]
     root: pathlib.Path | None = None,
 ) -> ProjectConfig:

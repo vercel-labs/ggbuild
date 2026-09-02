@@ -200,6 +200,7 @@ def dirty_tree_digest(source_dir: pathlib.Path) -> str | None:
     return digest.hexdigest()
 
 
+# @lat: [[overview#System Intent#Reproducibility Model]]
 @functools.cache
 def get_project_version_key() -> str:
     """Return a version, revision, and optional dirty-state identity."""

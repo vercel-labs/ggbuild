@@ -109,6 +109,7 @@ def detect_host_target(
     raise ValueError(f"unsupported host system: {system}")
 
 
+# @lat: [[orchestration#Project Orchestration#Host and Container Execution]]
 def validate_execution(
     target_config: TargetConfig,
     *,
@@ -785,6 +786,7 @@ def prepare_target(config: ProjectConfig, target_name: str) -> None:
     )
 
 
+# @lat: [[orchestration#Project Orchestration#Low-Level Build Boundary]]
 def node_environment(
     node: Mapping[str, object], paths: ExecutionPaths, config: ProjectConfig
 ) -> dict[str, str]:

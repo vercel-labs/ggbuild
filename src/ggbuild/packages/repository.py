@@ -61,6 +61,7 @@ class BundleRepository(poetry_repo.Repository):
 bundle_repo = BundleRepository("bundled")
 
 
+# @lat: [[recipes#Recipes and Sources#Dependency Semantics#Runtime and Build Graphs]]  # ruff: ignore[line-too-long]
 class Provider(poetry_provider.Provider):
     def __init__(
         self,

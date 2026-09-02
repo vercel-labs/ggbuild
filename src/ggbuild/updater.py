@@ -45,6 +45,7 @@ class UpdatePolicy(TypedDict):
     pattern: NotRequired[str]
 
 
+# @lat: [[maintenance#Release Maintenance#Declarative Release Discovery]]
 class UpdateablePackage:
     update_policy: ClassVar[UpdatePolicy]
 
@@ -238,6 +239,7 @@ def write_atomic(path: pathlib.Path, text: str) -> None:
         raise
 
 
+# @lat: [[maintenance#Release Maintenance#Transactional Recipe Updates]]
 def write_transaction(texts: dict[pathlib.Path, str]) -> None:
     """Replace text files as one best-effort filesystem transaction."""
     originals = {

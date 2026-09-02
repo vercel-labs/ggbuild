@@ -338,6 +338,7 @@ def _matrix_job(
 """
 
 
+# @lat: [[orchestration#Project Orchestration#Workflow as Plan Projection]]
 def render_workflow(
     config: ProjectConfig | None = None,
     *,

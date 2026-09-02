@@ -58,6 +58,7 @@ class LinuxPortableMuslTarget(LinuxMuslTarget, LinuxGenericTarget):
     pass
 
 
+# @lat: [[packaging#Target-Native Packaging#Portable and Native Outputs]]
 def get_specific_target(
     libc: str, arch: str, *, portable: bool
 ) -> targets.LinuxTarget:
