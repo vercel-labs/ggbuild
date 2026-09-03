@@ -52,4 +52,8 @@ Sorted public distributions upload first, then `SHA256SUMS`; ggbuild downloads t
 
 If interrupted, the draft is intentionally preserved for operator inspection and cleanup. Optional downstream index ingestion is a separate OIDC-authenticated operation that can retry against an explicitly supplied immutable tag without rebuilding or changing the release.
 
-After OIDC authentication, ingestion forwards the job's ephemeral GitHub token so private release assets can be read and rehashed. An ignored release is a workflow failure, preventing a transport-level success from concealing a missing index.
+After OIDC authentication, ingestion uses the job's ephemeral GitHub token to rehash release assets through GitHub's API, then mirrors verified primary archives to immutable public Blob paths. An ignored release is a workflow failure.
+
+The public feed exposes each primary archive as an ordered pair of stable service URLs. Static 307 CDN redirects send the first to the public GitHub release and the second to Blob without invoking application compute or proxying archive bytes.
+
+Consumers may advance to the fallback for network failures, HTTP 404/408/429, and 5xx responses. A checksum mismatch is terminal because changing origins must never bypass content verification.
