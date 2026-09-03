@@ -275,6 +275,7 @@ def test_generated_publication_job_requires_every_matrix_to_succeed(
 
     assert publish["environment"] == "release"
     assert publish["permissions"] == {
+        "actions": "read",
         "contents": "write",
         "id-token": "write",
     }
