@@ -125,10 +125,93 @@ def test_generated_workflow_applies_sccache_event_policy(
     assert dispatch["enable_sccache"]["default"] is True
     assert "github.event_name == 'pull_request' && false" in workflow
     assert "github.event_name == 'push' && true" in workflow
-    assert ("(github.event_name == 'push' && true) }}\n\njobs:") in workflow
+    assert "(github.event_name == 'push' && true) }}" in workflow
     assert "Get sccache credentials" in workflow
     assert "--env ACTIONS_RUNTIME_TOKEN" in workflow
     assert "${{ env.ACTIONS_RUNTIME_TOKEN }}" not in workflow
+
+
+def test_manual_workflow_can_override_linux_ggbuild_revision(
+    tmp_path: pathlib.Path,
+) -> None:
+    revision = "a" * 40
+    config = fixture_config(tmp_path)
+    docker_target = dataclasses.replace(config.targets[0], execution="docker")
+    workflow = render_workflow(
+        dataclasses.replace(config, targets=(docker_target,)),
+        ggbuild_revision=revision,
+    )
+    document = yaml.safe_load(workflow)
+
+    dispatch = document[True]["workflow_dispatch"]["inputs"]
+    assert dispatch["ggbuild_ref"] == {
+        "description": "Full ggbuild commit SHA to test; empty uses the pin",
+        "type": "string",
+        "required": False,
+    }
+    jobs = [
+        job
+        for name, job in document["jobs"].items()
+        if name.startswith("nodes_")
+    ]
+    docker_steps = [
+        step
+        for job in jobs
+        for step in job["steps"]
+        if step.get("name") == "Execute node in Linux image"
+    ]
+    assert docker_steps
+    assert document["env"]["GGBUILD_REF"] == (
+        "${{ (github.event_name == 'workflow_dispatch' && "
+        f"inputs.ggbuild_ref) || '{revision}' }}}}"
+    )
+    assert document["env"]["GGBUILD_REF_OVERRIDE"] == (
+        "${{ (github.event_name == 'workflow_dispatch' && "
+        "inputs.ggbuild_ref) || '' }}"
+    )
+    assert document["env"]["UV_NO_SYNC"] == (
+        "${{ github.event_name == 'workflow_dispatch' && "
+        "inputs.ggbuild_ref != '' }}"
+    )
+    assert all(
+        step["env"]["GGBUILD_REF"] == "${{ env.GGBUILD_REF }}"
+        for step in docker_steps
+    )
+    override_steps = [
+        step
+        for job in jobs
+        for step in job["steps"]
+        if step.get("name") == "Install requested ggbuild revision"
+    ]
+    assert override_steps
+    assert all(
+        "env.GGBUILD_REF_OVERRIDE != ''" in step["if"]
+        for step in override_steps
+    )
+    assert "^[0-9a-f]{40}$" in override_steps[0]["run"]
+    planning = document["jobs"]["planning"]
+    assert not any(
+        step.get("name") == "Install requested ggbuild revision"
+        for step in planning["steps"]
+    )
+    plan = next(
+        step
+        for step in planning["steps"]
+        if step.get("name") == "Create canonical build plan"
+    )
+    assert "--expected-digest" in plan["run"]
+    cache_steps = [
+        step
+        for job in jobs
+        for step in job["steps"]
+        if step.get("name") == "Restore exact bundle"
+    ]
+    assert cache_steps
+    assert all(
+        step["if"]
+        == "matrix.role == 'bundle' && env.GGBUILD_REF_OVERRIDE == ''"
+        for step in cache_steps
+    )
 
 
 def test_workflow_revision_uses_distribution_origin() -> None:
@@ -289,6 +372,7 @@ def test_generated_publication_job_requires_every_matrix_to_succeed(
     assert "github.event_name == 'push'" in publish["if"]
     assert "github.event_name == 'workflow_dispatch'" in publish["if"]
     assert "inputs.operation == 'build-and-publish'" in publish["if"]
+    assert "inputs.ggbuild_ref == ''" in publish["if"]
     assert "github.ref == 'refs/heads/main'" in publish["if"]
     downloads = [
         step

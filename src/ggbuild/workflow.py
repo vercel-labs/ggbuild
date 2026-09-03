@@ -123,6 +123,49 @@ def _job_component(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")
 
 
+def _manual_ggbuild_step(*, matrix: bool = False) -> str:
+    condition = "env.GGBUILD_REF_OVERRIDE != ''"
+    if matrix:
+        condition += (
+            " && (matrix.execution == 'host' || matrix.bare_linux_test)"
+        )
+    return f"""      - name: Install requested ggbuild revision
+        if: {condition}
+        shell: bash
+        run: |
+          if [[ ! "$GGBUILD_REF_OVERRIDE" =~ ^[0-9a-f]{{40}}$ ]]; then
+            echo "ggbuild_ref must be a full lowercase Git commit SHA" >&2
+            exit 2
+          fi
+          python="$(
+            uv run --no-sync python -c \
+              'import sys; print(sys.executable)'
+          )"
+          uv pip install --python "$python" \
+            "ggbuild @ git+https://github.com/vercel-labs/ggbuild@$GGBUILD_REF_OVERRIDE"
+"""
+
+
+def _ggbuild_environment(revision: str) -> str:
+    selected = (
+        "${{ (github.event_name == 'workflow_dispatch' && "
+        f"inputs.ggbuild_ref) || '{revision}' }}}}"
+    )
+    override = (
+        "${{ (github.event_name == 'workflow_dispatch' && "
+        "inputs.ggbuild_ref) || '' }}"
+    )
+    no_sync = (
+        "${{ github.event_name == 'workflow_dispatch' && "
+        "inputs.ggbuild_ref != '' }}"
+    )
+    return (
+        f"  GGBUILD_REF: {selected}\n"
+        f"  GGBUILD_REF_OVERRIDE: {override}\n"
+        f"  UV_NO_SYNC: {no_sync}"
+    )
+
+
 def _node_matrices(
     config: ProjectConfig, plan: dict[str, Any]
 ) -> list[tuple[str, tuple[str, ...], list[dict[str, str | bool]]]]:
@@ -182,7 +225,6 @@ def _node_matrices(
 
 def _matrix_job(
     config: ProjectConfig,
-    revision: str,
     *,
     job_id: str,
     dependencies: tuple[str, ...],
@@ -225,7 +267,7 @@ def _matrix_job(
           path: .cache/bundles
           merge-multiple: true
       - name: Restore exact bundle
-        if: matrix.role == 'bundle'
+        if: matrix.role == 'bundle' && env.GGBUILD_REF_OVERRIDE == ''
         uses: {_CACHE}
         with:
           path: .cache/bundles/${{{{ matrix.cache_key }}}}.tar.zst
@@ -258,6 +300,7 @@ def _matrix_job(
               process.env.ACTIONS_RUNTIME_TOKEN || '');
       - uses: {config.workflow.setup_action}
         if: matrix.execution == 'host' || matrix.bare_linux_test
+{_manual_ggbuild_step(matrix=True)}\
       - name: Execute node on host
         if: matrix.execution == 'host' && !matrix.bare_linux_test
         env:
@@ -288,7 +331,7 @@ def _matrix_job(
         if: matrix.execution == 'docker' && !matrix.bare_linux_test
         env:
           ACTIONS_CACHE_SERVICE_V2: on
-          GGBUILD_REF: {revision}
+          GGBUILD_REF: ${{{{ env.GGBUILD_REF }}}}
           SCCACHE_GHA_ENABLED: on
         run: >-
           docker run --rm
@@ -426,7 +469,6 @@ def render_workflow(
     matrix_jobs = "".join(
         _matrix_job(
             config,
-            revision,
             job_id=job_id,
             dependencies=dependencies,
             entries=entries,
@@ -441,6 +483,8 @@ def render_workflow(
             f"'{config.publication.repository}' && "
             "(github.event_name != 'workflow_dispatch' || "
             "inputs.operation == 'build-and-publish') && "
+            "(github.event_name != 'workflow_dispatch' || "
+            "inputs.ggbuild_ref == '') && "
             "((github.event_name == 'push' && github.ref == "
             f"'refs/heads/{workflow.branch}') || "
             "(github.event_name == 'workflow_dispatch' && github.ref == "
@@ -534,6 +578,10 @@ on:
         description: Enable sccache for intermediate object files
         type: boolean
         default: {str(sccache.production).lower()}
+      ggbuild_ref:
+        description: Full ggbuild commit SHA to test; empty uses the pin
+        type: string
+        required: false
   push:
     branches: [{workflow.branch}]
   pull_request:
@@ -547,6 +595,7 @@ concurrency:
 
 env:
   GGBUILD_ENABLE_SCCACHE: {enabled}
+{_ggbuild_environment(revision)}
 
 jobs:
   planning:
