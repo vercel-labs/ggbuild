@@ -453,6 +453,7 @@ def render_workflow(
     runs-on: ubuntu-latest
     environment: release
     permissions:
+      actions: read
       contents: write
       id-token: write
     steps:

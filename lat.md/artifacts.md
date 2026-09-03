@@ -40,7 +40,9 @@ Publication is all-or-nothing across every root coordinate in the canonical plan
 
 Before contacting GitHub, ggbuild validates every downloaded root record and requires the successful coordinate set to equal the planned roots exactly. It also verifies repository/run identity, release-wide names, hashes, sizes, and canonical public encodings.
 
-The tag comes from the authoritative GitHub run start time at UTC minute precision. Any existing draft or published tag is rejected, so retries cannot mutate an ambiguous partial release.
+The tag comes from the authoritative GitHub run start time at UTC minute precision. The publish job receives read-only Actions metadata access for that lookup; release writes and OIDC token minting remain separately scoped.
+
+Any existing draft or published tag is rejected, so retries cannot mutate an ambiguous partial release.
 
 ## Ordered Release Commit
 
