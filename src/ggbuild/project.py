@@ -10,6 +10,7 @@ from typing import Any, Literal, cast
 
 import dataclasses
 import pathlib
+import re
 import tomllib
 
 from ggbuild.targets.linux.dockerfile import docker_environment
@@ -70,6 +71,7 @@ class SccacheConfig:
 class PublicationConfig:
     repository: str
     index_url: str | None = None
+    protection_bypass_secret: str | None = None
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -258,7 +260,25 @@ def load_project(  # ruff: ignore[too-many-branches, too-many-locals,too-many-st
             raise ValueError(
                 "tool.ggbuild.publication.index-url must be an HTTPS URL"
             )
-        publication = PublicationConfig(repository, index_url)
+        protection_bypass_secret = publication_value.get(
+            "protection-bypass-secret"
+        )
+        if protection_bypass_secret is not None and (
+            not isinstance(protection_bypass_secret, str)
+            or re.fullmatch(
+                r"(?!GITHUB_)[A-Za-z_][A-Za-z0-9_]*",
+                protection_bypass_secret,
+                flags=re.IGNORECASE,
+            )
+            is None
+        ):
+            raise ValueError(
+                "tool.ggbuild.publication.protection-bypass-secret must be "
+                "a GitHub Actions secret name"
+            )
+        publication = PublicationConfig(
+            repository, index_url, protection_bypass_secret
+        )
     project_table = document.get("project", {})
     project_name = (
         str(project_table.get("name", project_root.name))

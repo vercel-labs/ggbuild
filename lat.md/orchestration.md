@@ -85,3 +85,5 @@ The generated GitHub Actions workflow projects the canonical plan's target-scope
 Each matrix job depends on the jobs containing its direct prerequisites. Bundle artifacts are handed across jobs by content key, root artifacts cross the explicit artifact-to-test boundary, and each child executes exactly one assigned node so it cannot redundantly schedule its closure.
 
 The planning job records an expected plan digest, generated files are checked byte-for-byte, action revisions are pinned, obsolete pull-request runs are cancelled, and publication depends on every build matrix succeeding.
+
+Downstream index ingestion authenticates with a GitHub OIDC token scoped to the configured HTTPS audience. Protected Vercel endpoints may additionally name a GitHub Actions secret whose value is sent as the Vercel protection-bypass header for both publication and retry ingestion.

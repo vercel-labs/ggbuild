@@ -264,7 +264,8 @@ def test_generated_publication_job_requires_every_matrix_to_succeed(
         fixture_config(tmp_path),
         publication=PublicationConfig(
             "vercel-labs/postgresbuild",
-            "https://postgresbuild.vercel.app/api/publication",
+            "https://postgresbuild.labs.vercel.dev/api/publication",
+            "VERCEL_AUTOMATION_BYPASS_SECRET",
         ),
     )
     workflow = render_workflow(config, ggbuild_revision="a" * 40)
@@ -305,6 +306,10 @@ def test_generated_publication_job_requires_every_matrix_to_succeed(
     }
     ingestion = publish["steps"][-1]
     assert "core.getIDToken" in ingestion["with"]["script"]
+    assert ingestion["env"]["PUBLICATION_PROTECTION_BYPASS"] == (
+        "${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}"
+    )
+    assert "'x-vercel-protection-bypass'" in ingestion["with"]["script"]
     assert ingestion["env"]["PUBLICATION_INDEX_URL"].endswith(
         "/api/publication"
     )
@@ -337,6 +342,12 @@ def test_generated_publication_job_requires_every_matrix_to_succeed(
     assert "inputs.operation == 'ingest-existing'" in ingest["if"]
     assert "^[0-9]{12}$" in ingest["steps"][0]["run"]
     assert ingest["steps"][1]["env"]["PUBLICATION_TAG"] == "${{ inputs.tag }}"
+    assert ingest["steps"][1]["env"]["PUBLICATION_PROTECTION_BYPASS"] == (
+        "${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}"
+    )
+    assert (
+        "'x-vercel-protection-bypass'" in ingest["steps"][1]["with"]["script"]
+    )
 
 
 def test_projects_without_publication_do_not_upload_test_records(
@@ -1454,33 +1465,50 @@ triple = "x86_64-unknown-linux-gnu"
 [tool.ggbuild.publication]
 repository = "example/project"
 {index_url}
+{bypass_setting}
 """
     (tmp_path / "pyproject.toml").write_text(
-        project.format(index_url=""), encoding="utf-8"
+        project.format(index_url="", bypass_setting=""),
+        encoding="utf-8",
     )
     assert load_project(tmp_path).publication == PublicationConfig(
         "example/project"
     )
     (tmp_path / "pyproject.toml").write_text(
-        project.format(index_url='index-url = "https://example.test/ingest"'),
+        project.format(
+            index_url='index-url = "https://example.test/ingest"',
+            bypass_setting=('protection-bypass-secret = "VERCEL_BYPASS"'),
+        ),
         encoding="utf-8",
     )
     assert load_project(tmp_path).publication == PublicationConfig(
-        "example/project", "https://example.test/ingest"
+        "example/project", "https://example.test/ingest", "VERCEL_BYPASS"
     )
     (tmp_path / "pyproject.toml").write_text(
-        project.format(index_url='index-url = "http://example.test/ingest"'),
+        project.format(
+            index_url='index-url = "http://example.test/ingest"',
+            bypass_setting="",
+        ),
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="HTTPS URL"):
         load_project(tmp_path)
     (tmp_path / "pyproject.toml").write_text(
         project.replace('repository = "example/project"', "").format(
-            index_url=""
+            index_url="", bypass_setting=""
         ),
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="owner/name"):
+        load_project(tmp_path)
+    (tmp_path / "pyproject.toml").write_text(
+        project.format(
+            index_url='index-url = "https://example.test/ingest"',
+            bypass_setting=('protection-bypass-secret = "invalid-secret"'),
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="GitHub Actions secret name"):
         load_project(tmp_path)
 
 
