@@ -51,3 +51,5 @@ GitHub publication uses a draft as a transaction boundary and promotes it only a
 Sorted public distributions upload first, then `SHA256SUMS`; ggbuild downloads that checksum asset and compares its bytes. The complete snapshot manifest uploads last, after which the draft becomes the latest immutable release.
 
 If interrupted, the draft is intentionally preserved for operator inspection and cleanup. Optional downstream index ingestion is a separate OIDC-authenticated operation that can retry against an explicitly supplied immutable tag without rebuilding or changing the release.
+
+After OIDC authentication, ingestion forwards the job's ephemeral GitHub token so private release assets can be read and rehashed. An ignored release is a workflow failure, preventing a transport-level success from concealing a missing index.

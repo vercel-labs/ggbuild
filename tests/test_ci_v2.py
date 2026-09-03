@@ -314,6 +314,11 @@ def test_generated_publication_job_requires_every_matrix_to_succeed(
     assert ingestion["env"]["PUBLICATION_INDEX_URL"].endswith(
         "/api/publication"
     )
+    github_token = ingestion["env"]["PUBLICATION_GITHUB_TOKEN"]
+    assert github_token.startswith("${{ secrets.")
+    assert github_token.endswith(" }}")
+    assert "'x-github-token'" in ingestion["with"]["script"]
+    assert "result.ignored === true" in ingestion["with"]["script"]
     root_uploads = [
         step
         for job in document["jobs"].values()
