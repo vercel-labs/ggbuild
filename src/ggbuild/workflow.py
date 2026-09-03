@@ -338,6 +338,58 @@ def _matrix_job(
 """
 
 
+def _publication_ingestion_step(
+    config: ProjectConfig,
+    *,
+    publication_tag: str,
+    condition: str | None = None,
+) -> str:
+    publication = config.publication
+    if publication is None or publication.index_url is None:
+        return ""
+    bypass_env = ""
+    bypass_header = ""
+    if publication.protection_bypass_secret is not None:
+        secret = publication.protection_bypass_secret
+        bypass_env = (
+            "\n          PUBLICATION_PROTECTION_BYPASS: "
+            f"${{{{ secrets.{secret} }}}}"
+        )
+        bypass_header = (
+            "\n                'x-vercel-protection-bypass': "
+            "process.env.PUBLICATION_PROTECTION_BYPASS,"
+        )
+    condition_line = f"\n        if: {condition}" if condition else ""
+    return f"""
+      - name: Ingest published snapshot index{condition_line}
+        uses: {_GITHUB_SCRIPT}
+        env:
+          PUBLICATION_INDEX_URL: {publication.index_url}
+          PUBLICATION_REPOSITORY: {publication.repository}
+          PUBLICATION_TAG: {publication_tag}{bypass_env}
+        with:
+          script: |
+            const token = await core.getIDToken(
+              process.env.PUBLICATION_INDEX_URL);
+            const response = await fetch(process.env.PUBLICATION_INDEX_URL, {{
+              method: 'POST',
+              headers: {{
+                authorization: `Bearer ${{token}}`,
+                'content-type': 'application/json',{bypass_header}
+              }},
+              body: JSON.stringify({{
+                repository: process.env.PUBLICATION_REPOSITORY,
+                tag: process.env.PUBLICATION_TAG,
+              }}),
+            }});
+            if (!response.ok) {{
+              const detail = await response.text();
+              throw new Error(
+                `index ingestion failed: ${{response.status}} ${{detail}}`);
+            }}
+"""
+
+
 # @lat: [[orchestration#Project Orchestration#Workflow as Plan Projection]]
 def render_workflow(
     config: ProjectConfig | None = None,
@@ -388,37 +440,11 @@ def render_workflow(
             "(github.event_name == 'workflow_dispatch' && github.ref == "
             f"'refs/heads/{workflow.branch}'))"
         )
-        ingestion = ""
-        if config.publication.index_url is not None:
-            ingestion = f"""
-      - name: Ingest published snapshot index
-        if: steps.publish.outputs.published == 'true'
-        uses: {_GITHUB_SCRIPT}
-        env:
-          PUBLICATION_INDEX_URL: {config.publication.index_url}
-          PUBLICATION_REPOSITORY: {config.publication.repository}
-          PUBLICATION_TAG: ${{{{ steps.publish.outputs.tag }}}}
-        with:
-          script: |
-            const token = await core.getIDToken(
-              process.env.PUBLICATION_INDEX_URL);
-            const response = await fetch(process.env.PUBLICATION_INDEX_URL, {{
-              method: 'POST',
-              headers: {{
-                authorization: `Bearer ${{token}}`,
-                'content-type': 'application/json',
-              }},
-              body: JSON.stringify({{
-                repository: process.env.PUBLICATION_REPOSITORY,
-                tag: process.env.PUBLICATION_TAG,
-              }}),
-            }});
-            if (!response.ok) {{
-              const detail = await response.text();
-              throw new Error(
-                `index ingestion failed: ${{response.status}} ${{detail}}`);
-            }}
-"""
+        ingestion = _publication_ingestion_step(
+            config,
+            publication_tag="${{ steps.publish.outputs.tag }}",
+            condition="steps.publish.outputs.published == 'true'",
+        )
         publication_job = f"""
   publish:
     name: Publish immutable snapshot
@@ -478,33 +504,7 @@ def render_workflow(
             echo "ingest-existing requires a twelve-digit tag" >&2
             exit 1
           fi
-      - name: Ingest published snapshot index
-        uses: {_GITHUB_SCRIPT}
-        env:
-          PUBLICATION_INDEX_URL: {config.publication.index_url}
-          PUBLICATION_REPOSITORY: {config.publication.repository}
-          PUBLICATION_TAG: ${{{{ inputs.tag }}}}
-        with:
-          script: |
-            const token = await core.getIDToken(
-              process.env.PUBLICATION_INDEX_URL);
-            const response = await fetch(process.env.PUBLICATION_INDEX_URL, {{
-              method: 'POST',
-              headers: {{
-                authorization: `Bearer ${{token}}`,
-                'content-type': 'application/json',
-              }},
-              body: JSON.stringify({{
-                repository: process.env.PUBLICATION_REPOSITORY,
-                tag: process.env.PUBLICATION_TAG,
-              }}),
-            }});
-            if (!response.ok) {{
-              const detail = await response.text();
-              throw new Error(
-                `index ingestion failed: ${{response.status}} ${{detail}}`);
-            }}
-"""
+{_publication_ingestion_step(config, publication_tag="${{ inputs.tag }}")}"""
     return (
         f"""# Generated by `ggbuild ci render-workflow`; do not edit.
 name: {workflow.name}
