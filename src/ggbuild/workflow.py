@@ -364,6 +364,7 @@ def _publication_ingestion_step(
       - name: Ingest published snapshot index{condition_line}
         uses: {_GITHUB_SCRIPT}
         env:
+          PUBLICATION_GITHUB_TOKEN: ${{{{ secrets.GITHUB_TOKEN }}}}
           PUBLICATION_INDEX_URL: {publication.index_url}
           PUBLICATION_REPOSITORY: {publication.repository}
           PUBLICATION_TAG: {publication_tag}{bypass_env}
@@ -376,6 +377,7 @@ def _publication_ingestion_step(
               headers: {{
                 authorization: `Bearer ${{token}}`,
                 'content-type': 'application/json',{bypass_header}
+                'x-github-token': process.env.PUBLICATION_GITHUB_TOKEN,
               }},
               body: JSON.stringify({{
                 repository: process.env.PUBLICATION_REPOSITORY,
@@ -386,6 +388,10 @@ def _publication_ingestion_step(
               const detail = await response.text();
               throw new Error(
                 `index ingestion failed: ${{response.status}} ${{detail}}`);
+            }}
+            const result = await response.json();
+            if (result.ignored === true) {{
+              throw new Error('index ingestion was ignored');
             }}
 """
 
