@@ -390,11 +390,15 @@ def test_generated_publication_job_requires_every_matrix_to_succeed(
         step for step in publish["steps"] if step.get("id") == "publish"
     )
     assert publish_step["env"] == {
-        "GITHUB_TOKEN": "${{ secrets.GITHUB_TOKEN }}"
+        "EXPECTED_PUBLICATION_TAG": (
+            "${{ needs.planning.outputs.publication_tag }}"
+        ),
+        "GITHUB_TOKEN": "${{ secrets.GITHUB_TOKEN }}",
     }
+    assert '--expected-tag "$EXPECTED_PUBLICATION_TAG"' in publish_step["run"]
     assert (
-        '--expected-tag "${{ needs.planning.outputs.publication_tag }}"'
-        in publish_step["run"]
+        "${{ needs.planning.outputs.publication_tag }}"
+        not in publish_step["run"]
     )
     ingestion = publish["steps"][-1]
     assert "core.getIDToken" in ingestion["with"]["script"]

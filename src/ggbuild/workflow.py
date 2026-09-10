@@ -569,12 +569,14 @@ def render_workflow(
       - name: Publish GitHub snapshot
         id: publish
         env:
+          EXPECTED_PUBLICATION_TAG: >-
+            ${{{{ needs.planning.outputs.publication_tag }}}}
           GITHUB_TOKEN: ${{{{ secrets.GITHUB_TOKEN }}}}
         run: >-
           uv run ggbuild ci publish-github
           --plan .cache/ggbuild-plan.json
           --artifacts .cache/publication
-          --expected-tag "${{{{ needs.planning.outputs.publication_tag }}}}"
+          --expected-tag "$EXPECTED_PUBLICATION_TAG"
           --github-output "$GITHUB_OUTPUT"
 {ingestion}"""
         if config.publication.index_url is not None:
