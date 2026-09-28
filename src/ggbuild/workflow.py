@@ -256,7 +256,6 @@ def _matrix_job(
       inputs.operation != 'ingest-existing'
     needs: [{needs}]
     runs-on: ${{{{ matrix.runner }}}}
-    timeout-minutes: {config.workflow.node_timeout_minutes}
     permissions:
       contents: read
       packages: read

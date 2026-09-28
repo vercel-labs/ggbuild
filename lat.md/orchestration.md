@@ -86,8 +86,6 @@ Each matrix job depends on the jobs containing its direct prerequisites. Bundle 
 
 The planning job records an expected plan digest, generated files are checked byte-for-byte, action revisions are pinned, obsolete pull-request runs are cancelled, and publication depends on every build matrix succeeding.
 
-Each node job has a wall-clock timeout so a stalled build fails and cannot hold a runner indefinitely. The default is two hours; projects may set `tool.ggbuild.workflow.node-timeout-minutes` between 1 and 360.
-
 Release-eligible plans also resolve the authoritative UTC-minute publication tag. Every matrix directly consumes that planning output so root artifacts are packaged with final public directory names before native testing; the publisher independently verifies the tag through an environment variable rather than interpolating the GitHub expression into shell code. Tagged local project builds propagate an explicit `--publication-tag` through the same artifact and test boundary for host verification.
 
 Manual dispatches may test host and Linux execution with a full ggbuild commit SHA. The static plan remains pinned, persistent bundle-cache reuse and publication are disabled, and normal runs enforce the generated revision and plan digest.
