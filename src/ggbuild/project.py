@@ -58,6 +58,7 @@ class WorkflowConfig:
     setup_action: str = "./.github/actions/ggbuild-setup"
     branch: str = "main"
     max_concurrency: int = 12
+    node_timeout_minutes: int = 120
     artifact_name: str = "{package}-{target}-{version}"
 
 
@@ -201,6 +202,9 @@ def load_project(  # ruff: ignore[too-many-branches, too-many-locals,too-many-st
         ),
         branch=str(workflow_value.get("branch", "main")),
         max_concurrency=int(workflow_value.get("max-concurrency", 12)),
+        node_timeout_minutes=int(
+            workflow_value.get("node-timeout-minutes", 120)
+        ),
         artifact_name=str(
             workflow_value.get("artifact-name", "{package}-{target}-{version}")
         ),
@@ -208,6 +212,11 @@ def load_project(  # ruff: ignore[too-many-branches, too-many-locals,too-many-st
     if workflow.max_concurrency < 1:
         raise ValueError(
             "tool.ggbuild.workflow.max-concurrency must be positive"
+        )
+    if not 1 <= workflow.node_timeout_minutes <= 360:
+        raise ValueError(
+            "tool.ggbuild.workflow.node-timeout-minutes "
+            "must be between 1 and 360"
         )
     raw_build = config.get("build", {})
     if not isinstance(raw_build, dict):

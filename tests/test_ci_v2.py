@@ -285,6 +285,7 @@ def test_generated_workflow_maps_exact_dependencies_to_bounded_matrices(
     assert all(
         job["strategy"]["max-parallel"] == 2 for job in matrices.values()
     )
+    assert all(job["timeout-minutes"] == 120 for job in matrices.values())
     assert all(
         job["strategy"]["fail-fast"] is False for job in matrices.values()
     )
@@ -1598,6 +1599,7 @@ environment = { MACOSX_DEPLOYMENT_TARGET = "14.0", CUSTOM = "yes" }
     }
     assert config.sccache == SccacheConfig()
     assert config.workflow.max_concurrency == 12
+    assert config.workflow.node_timeout_minutes == 120
 
     with pytest.raises(ValueError, match="no built-in Docker environment"):
         docker_environment("aarch64-apple-darwin")
@@ -1630,6 +1632,33 @@ max-concurrency = {value}
     )
     with pytest.raises(ValueError, match="max-concurrency must be positive"):
         load_project(tmp_path)
+
+
+def test_workflow_node_timeout_configuration(
+    tmp_path: pathlib.Path,
+) -> None:
+    project = """
+[project]
+name = "fixture"
+
+[tool.ggbuild]
+root-recipe = "tests.v2_recipe:Root"
+bundle-prefix = "fixture"
+
+[[tool.ggbuild.target]]
+triple = "x86_64-unknown-linux-gnu"
+
+[tool.ggbuild.workflow]
+node-timeout-minutes = {value}
+"""
+    config_file = tmp_path / "pyproject.toml"
+    config_file.write_text(project.format(value=45), encoding="utf-8")
+    assert load_project(tmp_path).workflow.node_timeout_minutes == 45
+
+    for invalid in (0, 361):
+        config_file.write_text(project.format(value=invalid), encoding="utf-8")
+        with pytest.raises(ValueError, match="must be between 1 and 360"):
+            load_project(tmp_path)
 
 
 def test_build_dbgsym_configuration(
