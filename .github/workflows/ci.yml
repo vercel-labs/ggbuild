@@ -22,6 +22,8 @@ jobs:
         with:
           python-version: "3.14"
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.13.4"
       - run: uv sync --frozen --no-default-groups --group=check
       - run: uv run --frozen --no-default-groups --group=check poe lint
         env:
@@ -44,6 +46,8 @@ jobs:
         with:
           python-version: "3.14"
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.13.4"
       - name: Set up latest ggt with timing cache
         uses: vercel-labs/ggt@d5c4cde0d300ff9158797001a1ecb83e4c19a76c # v1.5.3
         with:

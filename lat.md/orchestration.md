@@ -78,6 +78,10 @@ The environment identity includes the template, rendered Dockerfile, platform, i
 
 GNU uses a Rocky Linux 8 glibc baseline; musl uses a stripped Alpine build root. Minimal test images are separate because [[artifacts#ABI-Floor Linux Tests|runtime validation]] should not inherit build tools or libraries.
 
+Build images use uv 0.13.4, matching the CI and development toolchain. Both build roots explicitly refresh their OS CA certificates so HTTPX2 source downloads use the distribution's maintained trust store. These inputs participate in image identity and require newly published action images.
+
+GitHub publication also uses HTTPX2 and OS trust. Binary release assets use raw request bodies, redirected asset downloads drop authorization across hosts, and owned clients close on success or failure. Poetry and Docker SDK still require Requests; their bundled CA dependency remains updated in the lockfile.
+
 ## Workflow as Plan Projection
 
 The generated GitHub Actions workflow projects the canonical plan's target-scoped topological layers into bounded matrices.

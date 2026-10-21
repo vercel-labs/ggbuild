@@ -6,17 +6,19 @@ from __future__ import annotations
 
 from typing import Any, ClassVar, cast
 
+import gzip
 import hashlib
 import pathlib
 import platform as host_platform
 import tarfile
 import tempfile
 import unittest
-from collections.abc import Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from unittest import mock
 
+import httpx2
 import pytest
-import requests
 from lograil import (
     ProcessGroupResult,
     ProcessSpec,
@@ -132,57 +134,143 @@ def _response(
     content: bytes = b"",
     *,
     headers: dict[str, str] | None = None,
-) -> mock.Mock:
-    response = mock.Mock(spec=requests.Response)
-    response.status_code = status
-    response.headers = headers or {}
-    response.text = content.decode()
-    response.iter_content.return_value = iter((content,))
-    if status >= 400:
-        response.raise_for_status.side_effect = requests.HTTPError(str(status))
-    return response
+) -> httpx2.Response:
+    return httpx2.Response(
+        status, stream=httpx2.ByteStream(content), headers=headers
+    )
 
 
-def test_download_retries_transient_http_errors() -> None:
-    unavailable = _response(503)
+@contextmanager
+def _http(
+    respond: Callable[[httpx2.Request], httpx2.Response],
+) -> Iterator[None]:
+    client_type = httpx2.Client
+    clients = []
+
+    def client(**kwargs: Any) -> httpx2.Client:
+        value = client_type(transport=httpx2.MockTransport(respond), **kwargs)
+        clients.append(value)
+        return value
+
+    with mock.patch(
+        "ggbuild.packages.sources.httpx2.Client", side_effect=client
+    ):
+        try:
+            yield
+        finally:
+            assert clients
+            assert all(value.is_closed for value in clients)
+
+
+@pytest.mark.parametrize("status", [429, 500, 502, 503, 504])
+def test_download_retries_transient_http_errors(status: int) -> None:
+    unavailable = _response(status)
     success = _response(200, b"archive")
+    responses = iter((unavailable, success))
+    calls = []
+
+    def respond(request: httpx2.Request) -> httpx2.Response:
+        assert request.extensions["timeout"]["read"] == 30
+        calls.append(str(request.url))
+        return next(responses)
 
     with (
-        mock.patch(
-            "ggbuild.packages.sources.requests.get",
-            side_effect=(unavailable, success),
-        ) as get,
+        _http(respond),
         mock.patch("ggbuild.packages.sources.time.sleep") as sleep,
         mock.patch(
             "ggbuild.packages.sources.time.monotonic_ns", return_value=0
         ),
-    ):
-        result = package_sources._request_with_retry(  # ruff: ignore[private-member-access]
+        package_sources._request_with_retry(  # ruff: ignore[private-member-access]
             "https://example.com/archive", stream=True
-        )
+        ) as result,
+    ):
+        assert result is success
+        assert result.read() == b"archive"
 
-    assert result is success
-    assert get.call_count == 2
+    assert calls == ["https://example.com/archive"] * 2
     sleep.assert_called_once_with(1.0)
-    unavailable.close.assert_called_once_with()
+    assert unavailable.is_closed
+    assert success.is_closed
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [httpx2.ConnectError, httpx2.ReadTimeout, httpx2.RemoteProtocolError],
+)
+def test_download_retries_transport_errors(
+    failure: type[httpx2.TransportError],
+) -> None:
+    attempts = 0
+
+    def respond(_request: httpx2.Request) -> httpx2.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise failure("interrupted")
+        return _response(200, b"archive")
+
+    with (
+        _http(respond),
+        mock.patch("ggbuild.packages.sources.time.sleep") as sleep,
+        package_sources._request_with_retry(  # ruff: ignore[private-member-access]
+            "https://example.com/archive", stream=False
+        ) as response,
+    ):
+        assert response.content == b"archive"
+    assert attempts == 2
+    sleep.assert_called_once()
+
+
+@pytest.mark.parametrize("transport_failure", [False, True])
+def test_download_stops_retrying_after_five_attempts(
+    *, transport_failure: bool
+) -> None:
+    responses = []
+    attempts = 0
+
+    def respond(_request: httpx2.Request) -> httpx2.Response:
+        nonlocal attempts
+        attempts += 1
+        if transport_failure:
+            raise httpx2.ConnectError("unreachable")
+        response = _response(503)
+        responses.append(response)
+        return response
+
+    expected_error = (
+        httpx2.ConnectError if transport_failure else httpx2.HTTPStatusError
+    )
+    with (
+        _http(respond),
+        mock.patch("ggbuild.packages.sources.time.sleep") as sleep,
+        pytest.raises(expected_error),
+        package_sources._request_with_retry(  # ruff: ignore[private-member-access]
+            "https://example.com/archive", stream=True
+        ),
+    ):
+        pytest.fail("the download should fail")
+    assert attempts == 5
+    assert sleep.call_count == 4
+    assert all(response.is_closed for response in responses)
 
 
 def test_download_retry_honors_bounded_retry_after() -> None:
     unavailable = _response(429, headers={"retry-after": "120"})
     success = _response(200, b"archive")
+    responses = iter((unavailable, success))
 
     with (
-        mock.patch(
-            "ggbuild.packages.sources.requests.get",
-            side_effect=(unavailable, success),
-        ),
+        _http(lambda _request: next(responses)),
         mock.patch("ggbuild.packages.sources.time.sleep") as sleep,
-    ):
         package_sources._request_with_retry(  # ruff: ignore[private-member-access]
             "https://example.com/archive", stream=True
-        )
+        ),
+    ):
+        pass
 
     sleep.assert_called_once_with(60.0)
+    assert unavailable.is_closed
+    assert success.is_closed
 
 
 def test_download_falls_back_to_checksum_verified_mirror(
@@ -191,6 +279,12 @@ def test_download_falls_back_to_checksum_verified_mirror(
     expected = b"verified archive"
     primary = _response(200, b"wrong archive")
     mirror = _response(200, expected)
+    calls = []
+
+    def respond(request: httpx2.Request) -> httpx2.Response:
+        calls.append(str(request.url))
+        return primary if request.url.host == "primary.example" else mirror
+
     source = package_sources.HttpsSource(
         "https://primary.example/archive.tar.gz",
         "archive.tar.gz",
@@ -203,16 +297,13 @@ def test_download_falls_back_to_checksum_verified_mirror(
     )
     destination = tmp_path / source.name
 
-    with mock.patch(
-        "ggbuild.packages.sources.requests.get",
-        side_effect=(primary, mirror),
-    ) as get:
+    with _http(respond):
         result = source._download(destination, mock.Mock())  # ruff: ignore[private-member-access]
 
     assert result.read_bytes() == expected
-    assert [call.args[0] for call in get.call_args_list] == list(source.urls)
-    primary.close.assert_called_once_with()
-    mirror.close.assert_called_once_with()
+    assert calls == list(source.urls)
+    assert primary.is_closed
+    assert mirror.is_closed
 
 
 def test_download_uses_mirror_without_retrying_not_found(
@@ -220,6 +311,12 @@ def test_download_uses_mirror_without_retrying_not_found(
 ) -> None:
     not_found = _response(404)
     mirror = _response(200, b"archive")
+    calls = []
+
+    def respond(request: httpx2.Request) -> httpx2.Response:
+        calls.append(str(request.url))
+        return not_found if request.url.host == "primary.example" else mirror
+
     source = package_sources.HttpsSource(
         "https://primary.example/archive.tar.gz",
         "archive.tar.gz",
@@ -227,42 +324,85 @@ def test_download_uses_mirror_without_retrying_not_found(
     )
 
     with (
-        mock.patch(
-            "ggbuild.packages.sources.requests.get",
-            side_effect=(not_found, mirror),
-        ) as get,
+        _http(respond),
         mock.patch("ggbuild.packages.sources.time.sleep") as sleep,
     ):
         source._download(tmp_path / source.name, mock.Mock())  # ruff: ignore[private-member-access]
 
-    assert get.call_count == 2
+    assert calls == list(source.urls)
     sleep.assert_not_called()
-    not_found.close.assert_called_once_with()
+    assert not_found.is_closed
 
 
 def test_download_removes_partial_file_when_all_locations_fail(
     tmp_path: pathlib.Path,
 ) -> None:
-    partial = _response(200)
-    partial.iter_content.side_effect = requests.ConnectionError("disconnected")
+    destination = tmp_path / "archive.tar.gz"
+
+    class InterruptedStream(httpx2.SyncByteStream):
+        def __iter__(self) -> Iterator[bytes]:
+            yield b"partial archive"
+            assert destination.exists()
+            raise httpx2.ReadError("disconnected")
+
+    partial = httpx2.Response(200, stream=InterruptedStream())
     not_found = _response(404)
+
+    def respond(request: httpx2.Request) -> httpx2.Response:
+        return partial if request.url.host == "primary.example" else not_found
+
     source = package_sources.HttpsSource(
         "https://primary.example/archive.tar.gz",
-        "archive.tar.gz",
+        destination.name,
         mirrors=("https://mirror.example/archive.tar.gz",),
     )
-    destination = tmp_path / source.name
 
     with (
-        mock.patch(
-            "ggbuild.packages.sources.requests.get",
-            side_effect=(partial, not_found),
-        ),
+        _http(respond),
         pytest.raises(RuntimeError, match="all download locations failed"),
     ):
         source._download(destination, mock.Mock())  # ruff: ignore[private-member-access]
 
     assert not destination.exists()
+    assert partial.is_closed
+    assert not_found.is_closed
+
+
+def test_download_follows_redirects_and_fetches_checksum(
+    tmp_path: pathlib.Path,
+) -> None:
+    expected = b"verified archive" * 1024
+    checksum = hashlib.sha256(expected).hexdigest()
+    calls = []
+
+    def respond(request: httpx2.Request) -> httpx2.Response:
+        calls.append(str(request.url))
+        if request.url.host == "origin.example":
+            return httpx2.Response(
+                302, headers={"Location": "https://cdn.example/archive.tar.gz"}
+            )
+        if request.url.path.endswith(".sha256"):
+            return _response(200, f"{checksum}  archive.tar.gz\n".encode())
+        return _response(
+            200, gzip.compress(expected), headers={"Content-Encoding": "gzip"}
+        )
+
+    source = package_sources.HttpsSource(
+        "https://origin.example/archive.tar.gz", "archive.tar.gz"
+    )
+    source.add_verification(
+        package_sources.HashVerification(
+            "sha256", hash_url="https://cdn.example/archive.sha256"
+        )
+    )
+    with _http(respond):
+        result = source._download(tmp_path / source.name, mock.Mock())  # ruff: ignore[private-member-access]
+    assert result.read_bytes() == expected
+    assert calls == [
+        "https://origin.example/archive.tar.gz",
+        "https://cdn.example/archive.tar.gz",
+        "https://cdn.example/archive.sha256",
+    ]
 
 
 class PrebuiltSourceTest(unittest.TestCase):

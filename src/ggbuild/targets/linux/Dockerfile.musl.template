@@ -14,6 +14,7 @@ RUN apk add --no-cache \
         bison \
         build-base \
         bzip2 \
+        ca-certificates \
         cmake \
         coreutils \
         file \
@@ -31,7 +32,8 @@ RUN apk add --no-cache \
         pkgconf \
         tar \
         xz \
-        zstd
+        zstd \
+    && apk upgrade --no-cache ca-certificates
 
 RUN case "$(uname -m)" in \
         x86_64) sccache_arch=x86_64; sccache_sha256=@@sccache_x86_64_sha256 ;; \

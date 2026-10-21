@@ -10,6 +10,7 @@ COPY --from=uv /uv /usr/local/bin/uv
 RUN dnf install -y --setopt=install_weak_deps=False dnf-plugins-core \
     && dnf config-manager --set-enabled powertools \
     && dnf install -y --setopt=install_weak_deps=False epel-release \
+    && dnf upgrade -y ca-certificates \
     && dnf install -y --setopt=install_weak_deps=False \
         autoconf \
         automake \

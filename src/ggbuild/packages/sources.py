@@ -23,9 +23,10 @@ import tempfile
 import time
 import urllib.parse
 import zipfile
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 
-import requests
+import httpx2
 from lograil import ProcessSpec, progress, run_process_group, stage
 from lograil.parsers import OutputParserCapabilities
 
@@ -35,7 +36,7 @@ _DOWNLOAD_ATTEMPTS = 5
 _RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
 
-def _retry_delay(response: requests.Response | None, attempt: int) -> float:
+def _retry_delay(response: httpx2.Response | None, attempt: int) -> float:
     if response is not None:
         retry_after = response.headers.get("retry-after")
         if retry_after:
@@ -48,30 +49,39 @@ def _retry_delay(response: requests.Response | None, attempt: int) -> float:
     return backoff + jitter
 
 
-def _request_with_retry(url: str, *, stream: bool) -> requests.Response:
-    for attempt in range(1, _DOWNLOAD_ATTEMPTS + 1):
-        response: requests.Response | None = None
-        try:
-            response = requests.get(url, stream=stream, timeout=30)
-            if response.status_code not in _RETRYABLE_STATUS_CODES:
-                try:
-                    response.raise_for_status()
-                except requests.HTTPError:
+@contextmanager
+def _request_with_retry(url: str, *, stream: bool) -> Iterator[httpx2.Response]:
+    with httpx2.Client(timeout=30, follow_redirects=True) as client:
+        for attempt in range(1, _DOWNLOAD_ATTEMPTS + 1):
+            response: httpx2.Response | None = None
+            try:
+                response = client.send(
+                    client.build_request("GET", url), stream=stream
+                )
+                response.raise_for_status()
+            except httpx2.HTTPStatusError as error:
+                response = error.response
+                if (
+                    response.status_code not in _RETRYABLE_STATUS_CODES
+                    or attempt == _DOWNLOAD_ATTEMPTS
+                ):
                     response.close()
                     raise
-                return response
-        except requests.ConnectionError, requests.Timeout:
-            if attempt == _DOWNLOAD_ATTEMPTS:
-                raise
+            except httpx2.TransportError:
+                if attempt == _DOWNLOAD_ATTEMPTS:
+                    raise
+            else:
+                break
+            delay = _retry_delay(response, attempt)
+            if response is not None:
+                response.close()
+            time.sleep(delay)
         else:
-            if attempt == _DOWNLOAD_ATTEMPTS:
-                try:
-                    response.raise_for_status()
-                finally:
-                    response.close()
+            raise AssertionError("unreachable")
+        try:
+            yield response
+        finally:
             response.close()
-        time.sleep(_retry_delay(response, attempt))
-    raise AssertionError("unreachable")
 
 
 if TYPE_CHECKING:
@@ -157,11 +167,8 @@ class HashVerification(BaseVerification):
             )
 
     def _obtain_hash_value(self) -> str:
-        response = _request_with_retry(str(self._hash_url), stream=False)
-        try:
+        with _request_with_retry(str(self._hash_url), stream=False) as response:
             content = response.text.strip()
-        finally:
-            response.close()
         firstval, _, _rest = content.partition(" ")
         self._hash_value = firstval
         return firstval
@@ -248,7 +255,7 @@ class HttpsSource(BaseSource):
         for url in self.urls:
             try:
                 return self._download_url(url, destination, io)
-            except (OSError, ValueError, requests.RequestException) as error:
+            except (OSError, ValueError, httpx2.HTTPError) as error:
                 destination.unlink(missing_ok=True)
                 failures.append(f"{url}: {error}")
         raise RuntimeError(
@@ -259,34 +266,33 @@ class HttpsSource(BaseSource):
     def _download_url(
         self, url: str, destination: pathlib.Path, io: cleo_io.IO
     ) -> pathlib.Path:
-        req = _request_with_retry(url, stream=True)
         try:
-            length_header = req.headers.get("content-length")
-            length = int(length_header) if length_header is not None else None
-            with (
-                stage(
-                    "source/download",
-                    process="download",
-                    subject=self.name,
-                ),
-                progress(
-                    process="download",
-                    subject=self.name,
-                    description=url,
-                    total=length,
-                ) as download_progress,
-                pathlib.Path(destination).open("wb") as f,
-            ):
-                for chunk in req.iter_content(chunk_size=4096):
-                    if chunk:
+            with _request_with_retry(url, stream=True) as req:
+                length_header = req.headers.get("content-length")
+                length = (
+                    int(length_header) if length_header is not None else None
+                )
+                with (
+                    stage(
+                        "source/download",
+                        process="download",
+                        subject=self.name,
+                    ),
+                    progress(
+                        process="download",
+                        subject=self.name,
+                        description=url,
+                        total=length,
+                    ) as download_progress,
+                    pathlib.Path(destination).open("wb") as f,
+                ):
+                    for chunk in req.iter_bytes(chunk_size=4096):
                         download_progress.advance(len(chunk))
                         f.write(chunk)
-        except OSError, ValueError, requests.RequestException:
+        except OSError, ValueError, httpx2.HTTPError:
             if destination.exists():
                 destination.unlink()
             raise
-        finally:
-            req.close()
         try:
             self.verify(destination)
         except OSError, ValueError:
