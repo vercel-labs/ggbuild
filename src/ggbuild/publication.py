@@ -14,8 +14,9 @@ import mimetypes
 import os
 import pathlib
 import urllib.parse
+from contextlib import AbstractContextManager, nullcontext
 
-import requests
+import httpx2
 
 from ggbuild.artifact_names import (
     PublicArtifactRole,
@@ -33,6 +34,7 @@ from ggbuild.testing import (
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
+    from types import TracebackType
 
     from ggbuild.project import ProjectConfig
 
@@ -254,10 +256,16 @@ def _validate_record(
     return cast("dict[str, Any]", canonical)
 
 
-class GitHubClient:
-    def __init__(self, repository: str, token: str) -> None:
+class GitHubClient(AbstractContextManager["GitHubClient"]):
+    def __init__(
+        self,
+        repository: str,
+        token: str,
+        *,
+        session: httpx2.Client | None = None,
+    ) -> None:
         self.repository = repository
-        self.session = requests.Session()
+        self.session = session or httpx2.Client(follow_redirects=True)
         self.session.headers.update({
             "Accept": "application/vnd.github+json",
             "Authorization": f"Bearer {token}",
@@ -265,9 +273,15 @@ class GitHubClient:
         })
         self.api = f"https://api.github.com/repos/{repository}"
 
-    def request(
-        self, method: str, url: str, **kwargs: Any
-    ) -> requests.Response:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        self.session.close()
+
+    def request(self, method: str, url: str, **kwargs: Any) -> httpx2.Response:
         response = self.session.request(method, url, timeout=60, **kwargs)
         response.raise_for_status()
         return response
@@ -335,10 +349,12 @@ def resolve_publication_tag(
         raise ValueError(
             "GitHub repository does not match publication configuration"
         )
-    github = client or GitHubClient(
-        publication.repository, env.get("GITHUB_TOKEN", "")
-    )
-    return _tag(github.run_started_at(env["GITHUB_RUN_ID"]))
+    with (
+        nullcontext(client)
+        if client is not None
+        else GitHubClient(publication.repository, env.get("GITHUB_TOKEN", ""))
+    ) as github:
+        return _tag(github.run_started_at(env["GITHUB_RUN_ID"]))
 
 
 def _release_url(repository: str, tag: str, name: str) -> str:
@@ -526,47 +542,50 @@ def publish_github(  # ruff: ignore[too-many-locals]
             f"missing={sorted(expected_roots - published_roots)}, "
             f"extra={sorted(published_roots - expected_roots)}"
         )
-    github = client or GitHubClient(
-        publication.repository, env.get("GITHUB_TOKEN", "")
-    )
-    started_at = github.run_started_at(env["GITHUB_RUN_ID"])
-    tag = _tag(started_at)
-    if tag != expected_tag:
-        raise ValueError(
-            "planned publication tag does not match authoritative run start"
+    with (
+        nullcontext(client)
+        if client is not None
+        else GitHubClient(publication.repository, env.get("GITHUB_TOKEN", ""))
+    ) as github:
+        started_at = github.run_started_at(env["GITHUB_RUN_ID"])
+        tag = _tag(started_at)
+        if tag != expected_tag:
+            raise ValueError(
+                "planned publication tag does not match authoritative run start"
+            )
+        snapshot, checksum_bytes = _snapshot(
+            repository=publication.repository,
+            tag=tag,
+            plan=plan,
+            records=records,
+            started_at=started_at,
+            environment=env,
         )
-    snapshot, checksum_bytes = _snapshot(
-        repository=publication.repository,
-        tag=tag,
-        plan=plan,
-        records=records,
-        started_at=started_at,
-        environment=env,
-    )
-    expected_coordinates = {
-        (item["package"], item["source_version"], item["target"])
-        for item in snapshot["expected_coordinates"]
-    }
-    successful_coordinates = {
-        (
-            item["coordinate"]["package"],
-            item["coordinate"]["source_version"],
-            item["coordinate"]["target"],
-        )
-        for item in snapshot["successful"]
-    }
-    if (
-        len(successful_coordinates) != len(snapshot["successful"])
-        or successful_coordinates != expected_coordinates
-    ):
-        raise ValueError(
-            "successful coordinates do not exactly match expected coordinates"
-        )
-    if github.release_by_tag(tag) is not None:
-        raise ValueError(f"GitHub release tag already exists: {tag}")
-    if not dry_run:
-        _publish_snapshot(github, snapshot, checksum_bytes, artifacts)
-    return snapshot, tag
+        expected_coordinates = {
+            (item["package"], item["source_version"], item["target"])
+            for item in snapshot["expected_coordinates"]
+        }
+        successful_coordinates = {
+            (
+                item["coordinate"]["package"],
+                item["coordinate"]["source_version"],
+                item["coordinate"]["target"],
+            )
+            for item in snapshot["successful"]
+        }
+        if (
+            len(successful_coordinates) != len(snapshot["successful"])
+            or successful_coordinates != expected_coordinates
+        ):
+            raise ValueError(
+                "successful coordinates do not exactly match "
+                "expected coordinates"
+            )
+        if github.release_by_tag(tag) is not None:
+            raise ValueError(f"GitHub release tag already exists: {tag}")
+        if not dry_run:
+            _publish_snapshot(github, snapshot, checksum_bytes, artifacts)
+        return snapshot, tag
 
 
 def _asset_bytes(client: GitHubPublisher, asset: Mapping[str, Any]) -> bytes:
@@ -628,7 +647,7 @@ def _publish_snapshot(
             upload_url,
             params={"name": name},
             headers={"Content-Type": media_type},
-            data=payload,
+            content=payload,
         )
     checksum_asset = cast(
         "dict[str, Any]",
@@ -637,7 +656,7 @@ def _publish_snapshot(
             upload_url,
             params={"name": CHECKSUM_NAME},
             headers={"Content-Type": "text/plain"},
-            data=checksum_bytes,
+            content=checksum_bytes,
         ).json(),
     )
     if _asset_bytes(client, checksum_asset) != checksum_bytes:
@@ -647,7 +666,7 @@ def _publish_snapshot(
         upload_url,
         params={"name": SNAPSHOT_NAME},
         headers={"Content-Type": "application/json"},
-        data=canonical_json(snapshot).encode(),
+        content=canonical_json(snapshot).encode(),
     )
     client.request(
         "PATCH",

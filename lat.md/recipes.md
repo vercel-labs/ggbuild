@@ -36,6 +36,8 @@ Source acquisition prefers immutable, verified bytes and degrades predictably ac
 
 HTTP sources retry connection failures and selected transient statuses with bounded backoff, honor a bounded `Retry-After`, and try deduplicated mirrors. Cached or newly downloaded files are accepted only after every configured verifier passes; partial or invalid files are deleted.
 
+Source archives and checksum documents use HTTPX2 with the operating system's certificate store and follow redirects. Archive bodies stream to disk; responses close before retries, and clients close when a download succeeds or fails, including interrupted reads.
+
 Archive, Git, and local sources converge on a source tree or target-owned tarball. Git sources can preserve selected submodules or repository metadata when a recipe needs them, while local sources exclude version-control state from generated archives.
 
 ## Safe Extraction

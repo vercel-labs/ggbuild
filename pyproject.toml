@@ -25,9 +25,9 @@ dependencies = [
     "distlib~=0.4.3",
     "distro~=1.9.0",
     "docker>=7.1",
+    "httpx2>=2.16,<3",
     "lograil>=0.7.0",
     "poetry~=2.1.3",
-    "requests~=2.31.0",
     "setuptools>=75.3.1",
     "setuptools-rust>=0.11.4",
     "defusedxml>=0.7.1",
@@ -46,7 +46,6 @@ typing = [
     "types-docker",
     "types-defusedxml",
     "types-pyyaml",
-    "types-requests",
     "types-toml",
 ]
 
@@ -58,6 +57,7 @@ check = [
     "readme-renderer",
     "ruff",
     "ty",
+    "uv==0.13.4",
     "zizmor",
     { include-group = "test" },
     { include-group = "typing" },

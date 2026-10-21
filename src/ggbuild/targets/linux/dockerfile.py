@@ -24,7 +24,7 @@ _ACTION_GENERATED_HEADER = (
 )
 _ACTION_ENTRYPOINT = "action-entrypoint.sh"
 _ACTION_REGISTRY = "ghcr.io/vercel-labs/ggbuild"
-_UV_IMAGE = "ghcr.io/astral-sh/uv:0.11.24"
+_UV_IMAGE = "ghcr.io/astral-sh/uv:0.13.4"
 _SCCACHE_VERSION = "0.17.0"
 _SCCACHE_ARCHIVE_SHA256 = {
     "aarch64": (

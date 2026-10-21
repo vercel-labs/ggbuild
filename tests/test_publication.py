@@ -12,7 +12,9 @@ import operator
 import pathlib
 import shutil
 import tarfile
+from unittest import mock
 
+import httpx2
 import pytest
 import zstandard
 
@@ -526,7 +528,7 @@ class ReleaseClient:
             return Response(self.release)
         if method == "POST":
             name = kwargs["params"]["name"]
-            self.assets[name] = kwargs["data"]
+            self.assets[name] = kwargs["content"]
             return Response({"name": name, "url": f"asset://{name}"})
         if method == "GET":
             return Response({}, self.assets[url.removeprefix("asset://")])
@@ -640,3 +642,127 @@ def test_existing_release_is_rejected_by_entrypoint(
             environment=_environment(),
             client=client,
         )
+
+
+@pytest.mark.parametrize("fail_upload", [False, True])
+def test_publication_uses_httpx2_and_closes_its_client(
+    tmp_path: pathlib.Path, *, fail_upload: bool
+) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    _root(root)
+    assets: dict[str, bytes] = {}
+    uploaded: list[str] = []
+    published = False
+
+    def respond(request: httpx2.Request) -> httpx2.Response:
+        nonlocal published
+        assert request.extensions["timeout"]["read"] == 60
+        if request.url.host == "release-assets.githubusercontent.com":
+            assert "Authorization" not in request.headers
+            return httpx2.Response(200, content=assets[CHECKSUM_NAME])
+        assert request.headers["Authorization"] == "Bearer token"
+        assert request.headers["X-GitHub-Api-Version"] == "2022-11-28"
+        if request.url.path.endswith("/actions/runs/42"):
+            return httpx2.Response(
+                200, json={"run_started_at": "2026-01-02T03:04:05Z"}
+            )
+        if request.url.path.endswith("/releases"):
+            if request.method == "GET":
+                return httpx2.Response(200, json=[])
+            assert json.loads(request.content)["draft"] is True
+            return httpx2.Response(
+                201,
+                json={
+                    "id": 1,
+                    "upload_url": "https://uploads.github.com/assets{?name}",
+                },
+            )
+        if request.url.host == "uploads.github.com":
+            if fail_upload:
+                return httpx2.Response(503)
+            name = request.url.params["name"]
+            assets[name] = request.content
+            uploaded.append(name)
+            return httpx2.Response(
+                201,
+                json={"url": "https://api.github.com/releases/assets/1"},
+            )
+        if request.url.path == "/releases/assets/1":
+            assert request.headers["Accept"] == "application/octet-stream"
+            return httpx2.Response(
+                302,
+                headers={
+                    "Location": "https://release-assets.githubusercontent.com/1"
+                },
+            )
+        assert request.url.path.endswith("/releases/1")
+        assert request.method == "PATCH"
+        assert json.loads(request.content) == {
+            "draft": False,
+            "prerelease": False,
+            "make_latest": "true",
+        }
+        published = True
+        return httpx2.Response(200, json={})
+
+    session = httpx2.Client(
+        transport=httpx2.MockTransport(respond), follow_redirects=True
+    )
+    with mock.patch(
+        "ggbuild.publication.httpx2.Client", return_value=session
+    ) as create_client:
+        if fail_upload:
+            with pytest.raises(httpx2.HTTPStatusError):
+                publish_github(
+                    _plan(),
+                    tmp_path,
+                    _config(tmp_path),
+                    expected_tag=TAG,
+                    environment={**_environment(), "GITHUB_TOKEN": "token"},
+                )
+        else:
+            snapshot, tag = publish_github(
+                _plan(),
+                tmp_path,
+                _config(tmp_path),
+                expected_tag=TAG,
+                environment={**_environment(), "GITHUB_TOKEN": "token"},
+            )
+            assert tag == TAG
+            assert uploaded[-2:] == [CHECKSUM_NAME, SNAPSHOT_NAME]
+            assert assets[SNAPSHOT_NAME] == canonical_json(snapshot).encode()
+            for item in snapshot["successful"][0]["files"]:
+                if item["role"] in publication.PUBLIC_ROLES:
+                    assert (
+                        assets[item["release_name"]]
+                        == (root / item["logical_name"]).read_bytes()
+                    )
+    create_client.assert_called_once_with(follow_redirects=True)
+    assert session.is_closed
+    assert published is not fail_upload
+
+
+def test_github_release_lookup_paginates() -> None:
+    pages = []
+
+    def respond(request: httpx2.Request) -> httpx2.Response:
+        page = int(request.url.params["page"])
+        pages.append(page)
+        assert request.url.params["per_page"] == "100"
+        return httpx2.Response(
+            200,
+            json=(
+                [{"tag_name": "older"}] * 100
+                if page == 1
+                else [{"tag_name": TAG, "draft": True}]
+            ),
+        )
+
+    session = httpx2.Client(transport=httpx2.MockTransport(respond))
+    with publication.GitHubClient(
+        "example/project", "token", session=session
+    ) as github:
+        assert github.release_by_tag(TAG) == {"tag_name": TAG, "draft": True}
+    assert pages == [1, 2]
+    assert session.is_closed
