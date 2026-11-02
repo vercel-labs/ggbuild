@@ -327,6 +327,49 @@ def test_generated_workflow_maps_exact_dependencies_to_bounded_matrices(
     assert "--exact" in runs
 
 
+@pytest.mark.parametrize("publish", [False, True])
+def test_generated_workflow_shares_steps_across_targets_and_layers(
+    tmp_path: pathlib.Path, *, publish: bool
+) -> None:
+    config = dataclasses.replace(
+        fixture_config(tmp_path),
+        targets=(
+            TargetConfig(TARGET, "docker", "ubuntu-latest"),
+            TargetConfig("aarch64-apple-darwin", "host", "macos-latest"),
+        ),
+        publication=(PublicationConfig("example/project") if publish else None),
+    )
+    workflow = render_workflow(config, ggbuild_revision="a" * 40)
+    document = yaml.safe_load(workflow)
+    matrices = [
+        job
+        for name, job in document["jobs"].items()
+        if name.startswith("nodes_")
+    ]
+
+    assert len(matrices) > 2
+    assert workflow.count("    steps: &ggbuild_node_steps\n") == 1
+    assert workflow.count("    steps: *ggbuild_node_steps\n") == (
+        len(matrices) - 1
+    )
+    assert all(job["steps"] == matrices[0]["steps"] for job in matrices)
+    assert all(
+        job["steps"][0]["with"]["persist-credentials"] is False
+        for job in matrices
+    )
+    assert {
+        entry["execution"]
+        for job in matrices
+        for entry in job["strategy"]["matrix"]["include"]
+    } == {"host", "docker"}
+    docker_step = next(
+        step
+        for step in matrices[0]["steps"]
+        if step.get("name") == "Execute node in Linux image"
+    )
+    assert ("--env GGBUILD_PUBLICATION_TAG" in docker_step["run"]) == publish
+
+
 def test_generated_workflow_cancels_only_obsolete_pull_request_runs(
     tmp_path: pathlib.Path,
 ) -> None:

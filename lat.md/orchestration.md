@@ -88,6 +88,8 @@ The generated GitHub Actions workflow projects the canonical plan's target-scope
 
 Each matrix job depends on the jobs containing its direct prerequisites. Bundle artifacts are handed across jobs by content key, root artifacts cross the explicit artifact-to-test boundary, and each child executes exactly one assigned node so it cannot redundantly schedule its closure.
 
+Matrix jobs share one step sequence through a YAML anchor defined on the first matrix job. Later jobs alias that sequence, preserving the expanded workflow, per-job contexts, and scheduling while reducing generated file size.
+
 The planning job records an expected plan digest, generated files are checked byte-for-byte, action revisions are pinned, obsolete pull-request runs are cancelled, and publication depends on every build matrix succeeding.
 
 Release-eligible plans also resolve the authoritative UTC-minute publication tag. Every matrix directly consumes that planning output so root artifacts are packaged with final public directory names before native testing; the publisher independently verifies the tag through an environment variable rather than interpolating the GitHub expression into shell code. Tagged local project builds propagate an explicit `--publication-tag` through the same artifact and test boundary for host verification.
