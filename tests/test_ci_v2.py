@@ -6,9 +6,11 @@ from __future__ import annotations
 
 from typing import Any, ClassVar, cast
 
+import copy
 import dataclasses
 import hashlib
 import io
+import json
 import pathlib
 import tarfile
 import threading
@@ -18,6 +20,8 @@ from unittest import mock
 
 import pytest
 import yaml
+from cleo.testers.command_tester import CommandTester
+from poetry.core.packages.dependency import Dependency as PoetryDependency
 
 from ggbuild import execution, packages as ggbuild_packages
 from ggbuild.ci_protocol import (
@@ -33,6 +37,7 @@ from ggbuild.ci_protocol import (
     validate_plan,
 )
 from ggbuild.commands.build import Build as BuildCommand
+from ggbuild.commands.ci import CiPlan
 from ggbuild.execution import (
     build_command,
     node_environment,
@@ -44,7 +49,7 @@ from ggbuild.execution import (
 )
 from ggbuild.node_cache import policy_for
 from ggbuild.node_executor import DefaultNodeExecutor
-from ggbuild.packages import sources as package_sources
+from ggbuild.packages import repository, sources as package_sources
 from ggbuild.planner import create_plan
 from ggbuild.project import (
     BuildOptions,
@@ -80,7 +85,13 @@ from ggbuild.updater import (
     write_atomic,
     write_transaction,
 )
-from ggbuild.workflow import ggbuild_source_revision, render_workflow
+from ggbuild.workflow import (
+    ggbuild_source_revision,
+    github_node_matrix_outputs,
+    node_matrices,
+    render_workflow,
+    workflow_topology_digest,
+)
 
 TARGET = "x86_64-unknown-linux-gnu"
 PUBLICATION_TAG = "202609032045"
@@ -98,6 +109,162 @@ def fixture_config(root: pathlib.Path) -> ProjectConfig:
         workflow=WorkflowConfig(max_concurrency=2),
         build_options=BuildOptions(),
     )
+
+
+def runtime_matrices(config: ProjectConfig) -> dict[str, Any]:
+    outputs = github_node_matrix_outputs(
+        node_matrices(config, create_plan(config))
+    )
+    return {
+        name: json.loads(value)
+        for line in outputs.splitlines()
+        for name, _, value in [line.partition("=")]
+    }
+
+
+@pytest.mark.parametrize("updates", ["root", "library", "batch"])
+# @lat: [[orchestration#Project Orchestration#Workflow as Plan Projection#Runtime Matrices]]  # ruff: ignore[line-too-long]
+def test_recipe_bumps_change_runtime_data_without_changing_workflow(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, updates: str
+) -> None:
+    from tests.v2_recipe import (  # ruff: ignore[import-outside-top-level]
+        Dependency,
+        Root,
+    )
+
+    config = fixture_config(tmp_path)
+    before = render_workflow(config, ggbuild_revision="a" * 40)
+    original = create_plan(config)
+    monkeypatch.setattr(
+        repository, "bundle_repo", copy.deepcopy(repository.bundle_repo)
+    )
+    if updates in {"library", "batch"}:
+        Dependency("1.1", sha256="e" * 64)
+        monkeypatch.setattr(
+            Root,
+            "artifact_requirements",
+            [PoetryDependency("v2-dependency", "==1.1")],
+        )
+        monkeypatch.setattr(
+            Root,
+            "artifact_build_requirements",
+            [PoetryDependency("v2-dependency-dev", "==1.1")],
+        )
+    if updates in {"root", "batch"}:
+        Root("1.3", sha256="f" * 64)
+        Root("2.1", sha256="e" * 64)
+    updated = create_plan(config)
+
+    assert render_workflow(config, ggbuild_revision="a" * 40) == before
+    assert digest_json(original) != digest_json(updated)
+    assert github_node_matrix_outputs(node_matrices(config, original)) != (
+        github_node_matrix_outputs(node_matrices(config, updated))
+    )
+    assert {node["cache_key"] for node in original["nodes"]} != {
+        node["cache_key"] for node in updated["nodes"]
+    }
+    package = "v2-dependency" if updates == "library" else "v2-root"
+    assert {
+        node["version"]
+        for node in original["nodes"]
+        if node["package"] == package
+    } != {
+        node["version"]
+        for node in updated["nodes"]
+        if node["package"] == package
+    }
+
+
+def test_plan_command_emits_node_and_legacy_root_matrices(
+    tmp_path: pathlib.Path,
+) -> None:
+    config = fixture_config(tmp_path)
+    plan = create_plan(config)
+    topology = workflow_topology_digest(node_matrices(config, plan))
+    output = tmp_path / "github-output"
+    plan_path = tmp_path / "plan.json"
+    with mock.patch("ggbuild.commands.ci.load_project", return_value=config):
+        tester = CommandTester(CiPlan())
+        assert (
+            tester.execute(
+                f"--output {plan_path} --github-output {output} "
+                f"--github-node-matrices-output {output} "
+                f"--expected-topology-digest {topology} "
+                f"--expected-digest {digest_json(plan)}"
+            )
+            == 0
+        )
+    actual = {
+        name: json.loads(value)
+        for line in output.read_text().splitlines()
+        for name, _, value in [line.partition("=")]
+    }
+    assert json.loads(plan_path.read_text()) == plan
+    roots = actual.pop("matrix")
+    assert {root["node_id"] for root in roots} == {
+        root["node_id"] for root in plan["roots"]
+    }
+    assert actual == runtime_matrices(config)
+
+
+@pytest.mark.parametrize("failure", ["topology", "target", "plan", "digest"])
+def test_plan_command_rejects_stale_or_invalid_plans_before_writing(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    from tests.v2_recipe import Root  # ruff: ignore[import-outside-top-level]
+
+    config = fixture_config(tmp_path)
+    plan = create_plan(config)
+    expected = workflow_topology_digest(node_matrices(config, plan))
+    if failure == "topology":
+        monkeypatch.setattr(Root, "artifact_requirements", [])
+        monkeypatch.setattr(Root, "artifact_build_requirements", [])
+    elif failure == "target":
+        config = dataclasses.replace(
+            config,
+            targets=(
+                TargetConfig("aarch64-apple-darwin", "host", "macos-latest"),
+            ),
+        )
+    elif failure == "plan":
+        plan["nodes"][0]["cache_key"] = "ggbuild-v3-" + "0" * 64
+        monkeypatch.setattr(
+            "ggbuild.commands.ci.create_plan", lambda *_, **__: plan
+        )
+    output = tmp_path / "github-output"
+    output.write_text("existing=value\n")
+    plan_path = tmp_path / "plan.json"
+    args = (
+        f"--output {plan_path} --github-node-matrices-output {output} "
+        f"--expected-topology-digest {expected}"
+    )
+    if failure == "digest":
+        args += " --expected-digest " + "0" * 64
+    with (
+        mock.patch("ggbuild.commands.ci.load_project", return_value=config),
+        pytest.raises(ValueError),
+    ):
+        CommandTester(CiPlan()).execute(args)
+    assert output.read_text() == "existing=value\n"
+    assert not plan_path.exists()
+
+
+@pytest.mark.parametrize("count", [0, 257])
+def test_runtime_matrix_rejects_invalid_job_sizes(count: int) -> None:
+    with pytest.raises(ValueError, match="between 1 and 256"):
+        github_node_matrix_outputs([
+            ("nodes_fixture_0", (), [{"node": "x"}] * count)
+        ])
+
+
+def test_runtime_matrix_enforces_github_output_limit() -> None:
+    assert github_node_matrix_outputs([
+        ("nodes_fixture_0", (), [{"node": str(i)} for i in range(256)])
+    ])
+    with pytest.raises(ValueError, match="1 MiB"):
+        github_node_matrix_outputs([
+            ("nodes_fixture_0", (), [{"node": "x" * (512 * 1024)}])
+        ])
 
 
 def test_generated_workflow_can_checkout_repository(
@@ -202,7 +369,7 @@ def test_manual_workflow_can_override_linux_ggbuild_revision(
         for step in planning["steps"]
         if step.get("name") == "Create canonical build plan"
     )
-    assert "--expected-digest" in plan["run"]
+    assert "--expected-topology-digest" in plan["run"]
     cache_steps = [
         step
         for job in jobs
@@ -288,28 +455,31 @@ def test_generated_workflow_maps_exact_dependencies_to_bounded_matrices(
     assert all(
         job["strategy"]["fail-fast"] is False for job in matrices.values()
     )
+    runtime = runtime_matrices(fixture_config(tmp_path))
     node_jobs = {
         entry["node"]: name
-        for name, job in matrices.items()
-        for entry in job["strategy"]["matrix"]["include"]
+        for name, matrix in runtime.items()
+        for entry in matrix["include"]
     }
     plan = create_plan(fixture_config(tmp_path))
     plan_nodes = {str(node["id"]): node for node in plan["nodes"]}
-    for job in matrices.values():
-        node_ids = [
-            entry["node"] for entry in job["strategy"]["matrix"]["include"]
-        ]
+    for name, job in matrices.items():
+        assert job["strategy"]["matrix"] == (
+            "${{ fromJSON(needs.planning.outputs." + name + ") }}"
+        )
+        assert jobs["planning"]["outputs"][name] == (
+            "${{ steps.plan.outputs." + name + " }}"
+        )
+        node_ids = [entry["node"] for entry in runtime[name]["include"]]
         assert len({plan_nodes[node_id]["target"] for node_id in node_ids}) == 1
         expected = sorted({
             node_jobs[str(dependency)]
             for node_id in node_ids
             for dependency in plan_nodes[node_id]["direct_dependencies"]
         })
-        assert sorted(job["needs"]) == (expected or ["planning"])
+        assert sorted(job["needs"]) == sorted({"planning", *expected})
     entries = [
-        entry
-        for job in matrices.values()
-        for entry in job["strategy"]["matrix"]["include"]
+        entry for matrix in runtime.values() for entry in matrix["include"]
     ]
     assert {entry["node"] for entry in entries} == {
         str(node["id"]) for node in plan["nodes"]
@@ -325,6 +495,15 @@ def test_generated_workflow_maps_exact_dependencies_to_bounded_matrices(
     assert "ci execute-target" not in runs
     assert "--max-parallel 1" in runs
     assert "--exact" in runs
+    assert "${{ matrix." not in runs
+    for job in matrices.values():
+        steps = {step.get("name"): step for step in job["steps"]}
+        for name in (
+            "Execute node on host",
+            "Execute Linux test node",
+            "Execute node in Linux image",
+        ):
+            assert steps[name]["env"]["GGBUILD_NODE"] == "${{ matrix.node }}"
 
 
 @pytest.mark.parametrize("publish", [False, True])
@@ -359,8 +538,8 @@ def test_generated_workflow_shares_steps_across_targets_and_layers(
     )
     assert {
         entry["execution"]
-        for job in matrices
-        for entry in job["strategy"]["matrix"]["include"]
+        for matrix in runtime_matrices(config).values()
+        for entry in matrix["include"]
     } == {"host", "docker"}
     docker_step = next(
         step
@@ -538,16 +717,15 @@ def test_projects_without_publication_do_not_upload_test_records(
     assert "publish" not in document["jobs"]
     entries = [
         entry
-        for job in document["jobs"].values()
-        if "strategy" in job
-        for entry in job["strategy"]["matrix"]["include"]
+        for matrix in runtime_matrices(fixture_config(tmp_path)).values()
+        for entry in matrix["include"]
         if entry["role"] == "test"
     ]
     assert entries
     assert all(entry["publish_root"] is False for entry in entries)
     assert all(not entry["upload_name"] for entry in entries)
     planning = document["jobs"]["planning"]
-    assert "outputs" not in planning
+    assert "publication_tag" not in planning["outputs"]
     assert all(
         step.get("id") != "publication_tag" for step in planning["steps"]
     )
@@ -572,7 +750,9 @@ def test_generated_musl_tests_pull_minimal_runtime_image(
         if name.startswith("nodes_")
     ]
     entries = [
-        entry for job in jobs for entry in job["strategy"]["matrix"]["include"]
+        entry
+        for matrix in runtime_matrices(config).values()
+        for entry in matrix["include"]
     ]
     test_entry = next(entry for entry in entries if entry["role"] == "test")
     assert test_entry["test_image"].startswith(
@@ -583,7 +763,8 @@ def test_generated_musl_tests_pull_minimal_runtime_image(
         for step in jobs[-1]["steps"]
         if step.get("name") == "Pull Linux runtime-test image"
     )
-    assert pull["run"] == 'docker pull "${{ matrix.test_image }}"'
+    assert pull["env"]["GGBUILD_TEST_IMAGE"] == "${{ matrix.test_image }}"
+    assert pull["run"] == 'docker pull "$GGBUILD_TEST_IMAGE"'
 
 
 def test_generated_docker_jobs_authenticate_to_ghcr(

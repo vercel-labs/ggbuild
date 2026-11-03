@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright Vercel, Inc. and the contributors.
 
-"""Static GitHub Actions workflow mirroring the canonical v3 plan DAG."""
+"""GitHub Actions job topology with matrices from the canonical runtime plan."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import os
 import pathlib
 import re
 
-from ggbuild.ci_protocol import digest_json
+from ggbuild.ci_protocol import digest_json, validate_plan
 from ggbuild.dist import get_origin_commit_id
 from ggbuild.planner import create_plan
 from ggbuild.project import ProjectConfig, load_project
@@ -64,14 +64,7 @@ def _artifact_handoff(node: dict[str, Any]) -> str:
     return f"ggbuild-root-{node['target']}-{digest}"
 
 
-def _matrix_yaml(entries: list[dict[str, str | bool]]) -> str:
-    lines: list[str] = []
-    for entry in entries:
-        first_name, first_value = next(iter(entry.items()))
-        lines.append(f"          - {first_name}: {json.dumps(first_value)}")
-        for name, value in list(entry.items())[1:]:
-            lines.append(f"            {name}: {json.dumps(value)}")
-    return "\n".join(lines)
+type NodeMatrix = tuple[str, tuple[str, ...], list[dict[str, str | bool]]]
 
 
 def _node_matrix_entry(
@@ -166,9 +159,11 @@ def _ggbuild_environment(revision: str) -> str:
     )
 
 
-def _node_matrices(
+def node_matrices(
     config: ProjectConfig, plan: dict[str, Any]
-) -> list[tuple[str, tuple[str, ...], list[dict[str, str | bool]]]]:
+) -> list[NodeMatrix]:
+    """Project a validated plan into target-scoped topological matrices."""
+    validate_plan(plan)
     nodes = {str(node["id"]): node for node in plan["nodes"]}
     uploads: dict[str, tuple[str, bool]] = {}
     test_inputs: dict[str, str] = {}
@@ -193,9 +188,7 @@ def _node_matrices(
         else:
             uploads[str(node["id"])] = (artifact_name, False)
 
-    matrices: list[
-        tuple[str, tuple[str, ...], list[dict[str, str | bool]]]
-    ] = []
+    matrices: list[NodeMatrix] = []
     node_jobs: dict[str, str] = {}
     for index, layer in enumerate(plan["layers"]):
         target_nodes: dict[str, list[str]] = {}
@@ -223,17 +216,40 @@ def _node_matrices(
     return matrices
 
 
+def workflow_topology_digest(matrices: list[NodeMatrix]) -> str:
+    """Identify only the static jobs and their prerequisite jobs."""
+    return digest_json([
+        {"id": job_id, "needs": sorted({"planning", *dependencies})}
+        for job_id, dependencies, _ in sorted(matrices)
+    ])
+
+
+def github_node_matrix_outputs(matrices: list[NodeMatrix]) -> str:
+    """Encode all node matrices, rejecting GitHub limits before any write."""
+    lines = []
+    for job_id, _, entries in matrices:
+        if not 1 <= len(entries) <= 256:
+            raise ValueError(
+                f"matrix {job_id} must contain between 1 and 256 nodes"
+            )
+        value = json.dumps(
+            {"include": entries}, sort_keys=True, separators=(",", ":")
+        )
+        lines.append(f"{job_id}={value}\n")
+    output = "".join(lines)
+    if len(output.encode("utf-16-le")) > 1024 * 1024:
+        raise ValueError("node matrix outputs exceed GitHub's 1 MiB job limit")
+    return output
+
+
 def _matrix_job(
     config: ProjectConfig,
     *,
     job_id: str,
     dependencies: tuple[str, ...],
-    entries: list[dict[str, str | bool]],
     define_steps: bool,
 ) -> str:
-    needs_jobs = set(dependencies)
-    if config.publication is not None or not needs_jobs:
-        needs_jobs.add("planning")
+    needs_jobs = {"planning", *dependencies}
     needs = ", ".join(sorted(needs_jobs))
     publication_environment = (
         "    env:\n"
@@ -247,7 +263,6 @@ def _matrix_job(
         if define_steps
         else "    steps: *ggbuild_node_steps\n"
     )
-    matrix = _matrix_yaml(entries)
     return f"""  {job_id}:
     name: >-
       ${{{{ matrix.package }}}} ${{{{ matrix.version }}}}
@@ -264,9 +279,7 @@ def _matrix_job(
     strategy:
       fail-fast: false
       max-parallel: {config.workflow.max_concurrency}
-      matrix:
-        include:
-{matrix}
+      matrix: ${{{{ fromJSON(needs.planning.outputs.{job_id}) }}}}
 {steps}
 """
 
@@ -314,7 +327,9 @@ def _matrix_steps(config: ProjectConfig) -> str:
           password: ${{{{ secrets.GITHUB_TOKEN }}}}
       - name: Pull Linux runtime-test image
         if: matrix.bare_linux_test
-        run: docker pull "${{{{ matrix.test_image }}}}"
+        env:
+          GGBUILD_TEST_IMAGE: ${{{{ matrix.test_image }}}}
+        run: docker pull "$GGBUILD_TEST_IMAGE"
       - name: Get sccache credentials
         if: env.GGBUILD_ENABLE_SCCACHE == 'true'
         uses: {_GITHUB_SCRIPT}
@@ -333,10 +348,11 @@ def _matrix_steps(config: ProjectConfig) -> str:
         env:
           ACTIONS_CACHE_SERVICE_V2: on
           SCCACHE_GHA_ENABLED: on
+          GGBUILD_NODE: ${{{{ matrix.node }}}}
         run: >-
           uv run ggbuild ci execute-node
           --plan .cache/ggbuild-plan.json
-          --node "${{{{ matrix.node }}}}"
+          --node "$GGBUILD_NODE"
           --bundle-dir .cache
           --output-dir dist
           --work-dir .cache/work
@@ -344,10 +360,12 @@ def _matrix_steps(config: ProjectConfig) -> str:
           --exact
       - name: Execute Linux test node
         if: matrix.bare_linux_test
+        env:
+          GGBUILD_NODE: ${{{{ matrix.node }}}}
         run: >-
           uv run ggbuild ci execute-node
           --plan .cache/ggbuild-plan.json
-          --node "${{{{ matrix.node }}}}"
+          --node "$GGBUILD_NODE"
           --bundle-dir .cache
           --output-dir dist
           --work-dir .cache/work
@@ -360,6 +378,9 @@ def _matrix_steps(config: ProjectConfig) -> str:
           ACTIONS_CACHE_SERVICE_V2: on
           GGBUILD_REF: ${{{{ env.GGBUILD_REF }}}}
           SCCACHE_GHA_ENABLED: on
+          GGBUILD_NODE: ${{{{ matrix.node }}}}
+          GGBUILD_TARGET: ${{{{ matrix.target }}}}
+          GGBUILD_BUILD_IMAGE: ${{{{ matrix.build_image }}}}
         run: >-
           docker run --rm
           --volume "$GITHUB_WORKSPACE:/github/workspace"
@@ -371,16 +392,16 @@ def _matrix_steps(config: ProjectConfig) -> str:
           --env ACTIONS_RESULTS_URL
           --env ACTIONS_RUNTIME_TOKEN
           --env SCCACHE_GHA_ENABLED
-          "${{{{ matrix.build_image }}}}"
+          "$GGBUILD_BUILD_IMAGE"
           ci execute-node
           --plan .cache/ggbuild-plan.json
-          --node "${{{{ matrix.node }}}}"
+          --node "$GGBUILD_NODE"
           --bundle-dir .cache
           --output-dir dist
           --work-dir .cache/work
           --max-parallel 1
           --exact
-          --prepared-target "${{{{ matrix.target }}}}"
+          --prepared-target "$GGBUILD_TARGET"
       - name: Upload bundle
         if: matrix.role == 'bundle'
         uses: {_UPLOAD}
@@ -488,8 +509,6 @@ def _publication_workflow_context(config: ProjectConfig) -> dict[str, str]:
         "planning": f"""    permissions:
       actions: read
       contents: read
-    outputs:
-      publication_tag: ${{{{ steps.publication_tag.outputs.tag }}}}
 """,
         "tag_step": f"""      - name: Resolve publication tag
         if: >-
@@ -515,8 +534,6 @@ def render_workflow(
     revision = ggbuild_revision or ggbuild_source_revision()
     if re.fullmatch(r"[0-9a-f]{40}", revision) is None:
         raise ValueError("ggbuild revision must be a full lowercase Git SHA")
-    plan = create_plan(config)
-    plan_digest = digest_json(plan)
     sccache = config.sccache
     enabled = (
         "${{ "
@@ -531,16 +548,24 @@ def render_workflow(
         "${{ github.event.pull_request.number || github.ref }}"
     )
     publication_context = _publication_workflow_context(config)
-    matrices = _node_matrices(config, plan)
+    matrices = node_matrices(config, create_plan(config))
+    topology_digest = workflow_topology_digest(matrices)
+    planning_outputs = "    outputs:\n" + "".join(
+        f"      {job_id}: ${{{{ steps.plan.outputs.{job_id} }}}}\n"
+        for job_id, _, _ in matrices
+    )
+    if config.publication is not None:
+        planning_outputs += (
+            "      publication_tag: ${{ steps.publication_tag.outputs.tag }}\n"
+        )
     matrix_jobs = "".join(
         _matrix_job(
             config,
             job_id=job_id,
             dependencies=dependencies,
-            entries=entries,
             define_steps=index == 0,
         )
-        for index, (job_id, dependencies, entries) in enumerate(matrices)
+        for index, (job_id, dependencies, _) in enumerate(matrices)
     )
     publication_job = ""
     if config.publication is not None:
@@ -663,16 +688,19 @@ jobs:
       inputs.operation != 'ingest-existing'
     runs-on: ubuntu-latest
 {publication_context["planning"]}\
+{planning_outputs}\
     steps:
       - uses: {_CHECKOUT}
         with:
           persist-credentials: false
       - uses: {workflow.setup_action}
       - name: Create canonical build plan
+        id: plan
         run: >-
           uv run ggbuild ci plan
-          --expected-digest {plan_digest}
+          --expected-topology-digest {topology_digest}
           --output .cache/ggbuild-plan.json
+          --github-node-matrices-output "$GITHUB_OUTPUT"
 {publication_context["tag_step"]}\
       - name: Upload canonical plan
         uses: {_UPLOAD}
