@@ -31,7 +31,13 @@ from ggbuild.targets.linux.dockerfile import (
     docker_environment,
     write_bare_test_context,
 )
-from ggbuild.workflow import check_generated, write_generated
+from ggbuild.workflow import (
+    check_generated,
+    github_node_matrix_outputs,
+    node_matrices,
+    workflow_topology_digest,
+    write_generated,
+)
 
 from . import base
 
@@ -105,6 +111,16 @@ class CiPlan(base.Command):
             flag=False,
         ),
         option(
+            "github-node-matrices-output",
+            description="Append runtime node matrices to a GitHub output file.",
+            flag=False,
+        ),
+        option(
+            "expected-topology-digest",
+            description="Reject a plan requiring different workflow jobs.",
+            flag=False,
+        ),
+        option(
             "expected-digest",
             description="Reject a plan that differs from this digest.",
             flag=False,
@@ -112,11 +128,13 @@ class CiPlan(base.Command):
     ]
 
     def handle(self) -> int:
+        config = load_project()
         plan = create_plan(
+            config,
             options=PlanOptions(
                 targets=tuple(self.option("target") or ()),
                 versions=tuple(self.option("source-ref") or ()),
-            )
+            ),
         )
         expected_digest = self.option("expected-digest")
         actual_digest = digest_json(plan)
@@ -126,6 +144,21 @@ class CiPlan(base.Command):
                 f"{expected_digest}, got {actual_digest}; run "
                 "ggbuild ci render-workflow"
             )
+        expected_topology = self.option("expected-topology-digest")
+        matrices_output = self.option("github-node-matrices-output")
+        encoded_matrices = ""
+        if expected_topology or matrices_output:
+            matrices = node_matrices(config, plan)
+            if (
+                expected_topology
+                and expected_topology != workflow_topology_digest(matrices)
+            ):
+                raise ValueError(
+                    "generated workflow topology is stale; prepare a reviewed "
+                    "update with ggbuild ci render-workflow"
+                )
+            if matrices_output:
+                encoded_matrices = github_node_matrix_outputs(matrices)
         output = self.option("output")
         if output:
             write_plan(pathlib.Path(output), plan)
@@ -142,6 +175,11 @@ class CiPlan(base.Command):
                 "a", encoding="utf-8"
             ) as target:
                 target.write(f"matrix={matrix}\n")
+        if matrices_output:
+            with pathlib.Path(matrices_output).open(
+                "a", encoding="utf-8"
+            ) as target:
+                target.write(encoded_matrices)
         return 0
 
 

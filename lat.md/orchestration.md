@@ -90,10 +90,20 @@ Each matrix job depends on the jobs containing its direct prerequisites. Bundle 
 
 Matrix jobs share one step sequence through a YAML anchor defined on the first matrix job. Later jobs alias that sequence, preserving the expanded workflow, per-job contexts, and scheduling while reducing generated file size.
 
-The planning job records an expected plan digest, generated files are checked byte-for-byte, action revisions are pinned, obsolete pull-request runs are cancelled, and publication depends on every build matrix succeeding.
+The planning job checks an expected job-topology digest, generated files are checked byte-for-byte, action revisions are pinned, obsolete pull-request runs are cancelled, and publication depends on every build matrix succeeding.
 
 Release-eligible plans also resolve the authoritative UTC-minute publication tag. Every matrix directly consumes that planning output so root artifacts are packaged with final public directory names before native testing; the publisher independently verifies the tag through an environment variable rather than interpolating the GitHub expression into shell code. Tagged local project builds propagate an explicit `--publication-tag` through the same artifact and test boundary for host verification.
 
-Manual dispatches may test host and Linux execution with a full ggbuild commit SHA. The static plan remains pinned, persistent bundle-cache reuse and publication are disabled, and normal runs enforce the generated revision and plan digest.
+Manual dispatches may test host and Linux execution with a full ggbuild commit SHA. Planning uses the pinned revision, persistent bundle-cache reuse and publication are disabled, and normal runs enforce the generated revision and job topology.
 
 Downstream index ingestion authenticates with a GitHub OIDC token scoped to the configured HTTPS audience. Protected Vercel endpoints may additionally name a GitHub Actions secret whose value is sent as the Vercel protection-bypass header for both publication and retry ingestion.
+
+### Runtime Matrices
+
+Version-dependent matrix entries come from the same runtime plan consumed by execution and publication, so routine recipe bumps leave generated YAML unchanged.
+
+[[src/ggbuild/commands/ci.py#CiPlan]] accepts `--github-node-matrices-output` to emit compact per-job JSON and `--expected-topology-digest` to verify the static job IDs and prerequisite jobs before writing outputs. The existing root-matrix output and optional full-plan digest assertion remain available.
+
+The workflow consumes those outputs through `fromJSON`; every matrix directly depends on planning. Node versions, content-based cache keys, artifact handoffs, runners, and image references are resolved from the current checkout. Shell commands receive matrix values through quoted environment variables instead of expression interpolation. The canonical v3 plan and its validation remain unchanged.
+
+Topology changes require reviewed regeneration. Matrix jobs exceeding 256 entries or node outputs exceeding GitHub's 1 MiB UTF-16 job limit fail before output publication; matrices are never truncated or regrouped silently.
