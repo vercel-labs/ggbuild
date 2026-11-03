@@ -229,6 +229,7 @@ def _matrix_job(
     job_id: str,
     dependencies: tuple[str, ...],
     entries: list[dict[str, str | bool]],
+    define_steps: bool,
 ) -> str:
     needs_jobs = set(dependencies)
     if config.publication is not None or not needs_jobs:
@@ -241,10 +242,10 @@ def _matrix_job(
         if config.publication is not None
         else ""
     )
-    publication_docker_argument = (
-        "          --env GGBUILD_PUBLICATION_TAG\n"
-        if config.publication is not None
-        else ""
+    steps = (
+        "    steps: &ggbuild_node_steps\n" + _matrix_steps(config)
+        if define_steps
+        else "    steps: *ggbuild_node_steps\n"
     )
     matrix = _matrix_yaml(entries)
     return f"""  {job_id}:
@@ -266,7 +267,17 @@ def _matrix_job(
       matrix:
         include:
 {matrix}
-    steps:
+{steps}
+"""
+
+
+def _matrix_steps(config: ProjectConfig) -> str:
+    publication_docker_argument = (
+        "          --env GGBUILD_PUBLICATION_TAG\n"
+        if config.publication is not None
+        else ""
+    )
+    return f"""\
       - uses: {_CHECKOUT}
         with:
           persist-credentials: false
@@ -394,7 +405,6 @@ def _matrix_job(
           path: dist/${{{{ matrix.target }}}}/${{{{ matrix.version }}}}/
           if-no-files-found: error
           retention-days: 1
-
 """
 
 
@@ -528,8 +538,9 @@ def render_workflow(
             job_id=job_id,
             dependencies=dependencies,
             entries=entries,
+            define_steps=index == 0,
         )
-        for job_id, dependencies, entries in matrices
+        for index, (job_id, dependencies, entries) in enumerate(matrices)
     )
     publication_job = ""
     if config.publication is not None:
