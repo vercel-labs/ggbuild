@@ -90,7 +90,11 @@ Each matrix job depends on the jobs containing its direct prerequisites. Bundle 
 
 Matrix jobs share one step sequence through a YAML anchor defined on the first matrix job. Later jobs alias that sequence, preserving the expanded workflow, per-job contexts, and scheduling while reducing generated file size.
 
-The planning job checks an expected job-topology digest, generated files are checked byte-for-byte, action revisions are pinned, obsolete pull-request runs are cancelled, and publication depends on every build matrix succeeding.
+The planning job checks an expected job-topology digest, generated files are checked byte-for-byte, action revisions are pinned, and obsolete pull-request runs are cancelled.
+
+`All builds` gathers planning and every build/test matrix into one stable required check. It runs even after failures and rejects failed, cancelled, or skipped prerequisites. Publication depends on this gate. Only main-branch retry ingestion skips it.
+
+The gate runs on Ubuntu. Cross-platform tests verify its dependency wiring; Unix tests also execute its shell command against every prerequisite result.
 
 Release-eligible plans also resolve the authoritative UTC-minute publication tag. Every matrix directly consumes that planning output so root artifacts are packaged with final public directory names before native testing; the publisher independently verifies the tag through an environment variable rather than interpolating the GitHub expression into shell code. Tagged local project builds propagate an explicit `--publication-tag` through the same artifact and test boundary for host verification.
 

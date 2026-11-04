@@ -11,7 +11,9 @@ import dataclasses
 import hashlib
 import io
 import json
+import os
 import pathlib
+import subprocess
 import tarfile
 import threading
 from collections.abc import Mapping
@@ -448,7 +450,15 @@ def test_generated_workflow_maps_exact_dependencies_to_bounded_matrices(
     matrices = {
         name: job for name, job in jobs.items() if name.startswith("nodes_")
     }
-    assert set(jobs) == {"planning", *matrices}
+    assert set(jobs) == {"planning", "gather", *matrices}
+    gather = jobs["gather"]
+    assert gather["name"] == "All builds"
+    assert gather["if"] == "always()"
+    assert gather["runs-on"] == "ubuntu-latest"
+    assert set(gather["needs"]) == {"planning", *matrices}
+    assert gather["steps"][0]["env"] == {
+        "JOB_RESULTS": "${{ toJSON(needs.*.result) }}"
+    }
     assert all(
         job["strategy"]["max-parallel"] == 2 for job in matrices.values()
     )
@@ -565,6 +575,34 @@ def test_generated_workflow_cancels_only_obsolete_pull_request_runs(
     }
 
 
+@pytest.mark.parametrize(
+    "result", ["success", "failure", "cancelled", "skipped"]
+)
+@pytest.mark.skipif(os.name == "nt", reason="Ubuntu gate uses a POSIX shell")
+def test_generated_gather_rejects_unsuccessful_results(
+    tmp_path: pathlib.Path, result: str
+) -> None:
+    jobs = yaml.safe_load(
+        render_workflow(fixture_config(tmp_path), ggbuild_revision="a" * 40)
+    )["jobs"]
+    gather = jobs["gather"]
+    step = gather["steps"][0]
+    # Exercise trusted, generated shell against every prerequisite's result.
+    for dependency in gather["needs"]:
+        results = dict.fromkeys(gather["needs"], "success")
+        results[dependency] = result
+        completed = subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
+            ["/bin/bash", "-e", "-c", step["run"]],
+            env={
+                **os.environ,
+                "JOB_RESULTS": json.dumps(list(results.values())),
+            },
+            capture_output=True,
+            check=False,
+        )
+        assert (completed.returncode == 0) == (result == "success")
+
+
 def test_generated_publication_job_requires_every_matrix_to_succeed(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -590,10 +628,13 @@ def test_generated_publication_job_requires_every_matrix_to_succeed(
     assert publish["if"].startswith(
         "success() && github.repository == 'vercel-labs/postgresbuild'"
     )
-    assert set(publish["needs"]) == {
-        "planning",
-        *(name for name, job in document["jobs"].items() if "strategy" in job),
-    }
+    assert set(publish["needs"]) == {"planning", "gather"}
+    assert document["jobs"]["gather"]["if"] == (
+        "always() && !(github.repository == 'vercel-labs/postgresbuild' && "
+        "github.event_name == 'workflow_dispatch' && "
+        "inputs.operation == 'ingest-existing' && "
+        "github.ref == 'refs/heads/main')"
+    )
     assert "github.event_name == 'push'" in publish["if"]
     assert "github.event_name == 'workflow_dispatch'" in publish["if"]
     assert "inputs.operation == 'build-and-publish'" in publish["if"]

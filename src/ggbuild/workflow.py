@@ -523,6 +523,35 @@ def _publication_workflow_context(config: ProjectConfig) -> dict[str, str]:
     }
 
 
+def _gather_job(config: ProjectConfig, matrices: list[NodeMatrix]) -> str:
+    gather_needs = ", ".join(["planning", *(item[0] for item in matrices)])
+    gather_condition = "always()"
+    if (
+        config.publication is not None
+        and config.publication.index_url is not None
+    ):
+        gather_condition += (
+            " && !(github.repository == "
+            f"'{config.publication.repository}' && "
+            "github.event_name == 'workflow_dispatch' && "
+            "inputs.operation == 'ingest-existing' && "
+            f"github.ref == 'refs/heads/{config.workflow.branch}')"
+        )
+    return f"""
+  gather:
+    name: All builds
+    if: >-
+      {gather_condition}
+    needs: [{gather_needs}]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check build results
+        env:
+          JOB_RESULTS: ${{{{ toJSON(needs.*.result) }}}}
+        run: jq -e 'all(.[]; . == "success")' <<< "$JOB_RESULTS"
+"""
+
+
 # @lat: [[orchestration#Project Orchestration#Workflow as Plan Projection]]
 def render_workflow(
     config: ProjectConfig | None = None,
@@ -569,7 +598,6 @@ def render_workflow(
     )
     publication_job = ""
     if config.publication is not None:
-        needs = ", ".join(["planning", *(item[0] for item in matrices)])
         condition = f"success() && {publication_context['condition']}"
         ingestion = _publication_ingestion_step(
             config,
@@ -580,7 +608,7 @@ def render_workflow(
   publish:
     name: Publish immutable snapshot
     if: {condition}
-    needs: [{needs}]
+    needs: [planning, gather]
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -710,7 +738,7 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-{matrix_jobs}{publication_job}""".rstrip()
+{matrix_jobs}{_gather_job(config, matrices)}{publication_job}""".rstrip()
         + "\n"
     )
 
