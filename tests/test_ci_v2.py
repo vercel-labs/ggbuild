@@ -714,6 +714,43 @@ def test_generated_publication_job_requires_every_matrix_to_succeed(
     )
 
 
+def test_post_ingestion_action_follows_success_for_publication_and_recovery(
+    tmp_path: pathlib.Path,
+) -> None:
+    config = dataclasses.replace(
+        fixture_config(tmp_path),
+        publication=PublicationConfig(
+            "example/project",
+            "https://example.test/ingest",
+            post_ingest_action="./.github/actions/notify-release",
+        ),
+    )
+    jobs = yaml.safe_load(render_workflow(config, ggbuild_revision="a" * 40))[
+        "jobs"
+    ]
+    for name, tag in (
+        ("publish", "${{ steps.publish.outputs.tag }}"),
+        ("ingest_existing", "${{ inputs.tag }}"),
+    ):
+        job = jobs[name]
+        ingestion, hook = job["steps"][-2:]
+        assert ingestion["id"] == "ingest"
+        assert "result.ignored === true" in ingestion["with"]["script"]
+        assert hook["uses"] == "./.github/actions/notify-release"
+        assert hook["if"] == "steps.ingest.outcome == 'success'"
+        assert hook["with"] == {"tag": tag}
+        assert job["permissions"]["contents"] == "write"
+        checkout = next(
+            step
+            for step in job["steps"]
+            if step.get("uses", "").startswith("actions/checkout@")
+        )
+        assert checkout["with"]["persist-credentials"] is False
+    assert jobs["publish"]["steps"][-2]["if"] == (
+        "steps.publish.outputs.published == 'true'"
+    )
+
+
 def test_generated_workflow_propagates_authoritative_publication_tag(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -1954,6 +1991,39 @@ repository = "example/project"
     assert load_project(tmp_path).publication == PublicationConfig(
         "example/project", "https://example.test/ingest", "VERCEL_BYPASS"
     )
+    valid = project.format(
+        index_url='index-url = "https://example.test/ingest"',
+        bypass_setting="",
+    )
+    (tmp_path / "pyproject.toml").write_text(
+        valid + '\npost-ingest-action = "./.github/actions/notify-release"\n',
+        encoding="utf-8",
+    )
+    assert load_project(tmp_path).publication == PublicationConfig(
+        "example/project",
+        "https://example.test/ingest",
+        post_ingest_action="./.github/actions/notify-release",
+    )
+    for action in (
+        '"owner/action@main"',
+        '"./.github/actions/../other"',
+        '"./.github/actions/foo\\nbar"',
+        '""',
+        "true",
+    ):
+        (tmp_path / "pyproject.toml").write_text(
+            valid + f"\npost-ingest-action = {action}\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(ValueError, match="local action"):
+            load_project(tmp_path)
+    (tmp_path / "pyproject.toml").write_text(
+        project.format(index_url="", bypass_setting="")
+        + '\npost-ingest-action = "./.github/actions/notify-release"\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="requires index-url"):
+        load_project(tmp_path)
     (tmp_path / "pyproject.toml").write_text(
         project.format(
             index_url='index-url = "http://example.test/ingest"',

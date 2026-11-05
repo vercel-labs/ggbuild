@@ -102,6 +102,8 @@ Manual dispatches may test host and Linux execution with a full ggbuild commit S
 
 Downstream index ingestion authenticates with a GitHub OIDC token scoped to the configured HTTPS audience. Protected Vercel endpoints may additionally name a GitHub Actions secret whose value is sent as the Vercel protection-bypass header for both publication and retry ingestion.
 
+An optional `publication.post-ingest-action` names a local action under `./.github/actions/`. It receives the immutable `tag` input only after successful index ingestion, including recovery runs. Enabling it also checks out the trusted recovery revision and grants that job contents-write permission for downstream signalling; projects without the hook keep read-only recovery and no checkout.
+
 ### Runtime Matrices
 
 Version-dependent matrix entries come from the same runtime plan consumed by execution and publication, so routine recipe bumps leave generated YAML unchanged.

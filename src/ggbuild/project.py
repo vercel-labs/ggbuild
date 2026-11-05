@@ -72,6 +72,7 @@ class PublicationConfig:
     repository: str
     index_url: str | None = None
     protection_bypass_secret: str | None = None
+    post_ingest_action: str | None = None
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -276,8 +277,27 @@ def load_project(  # ruff: ignore[too-many-branches, too-many-locals,too-many-st
                 "tool.ggbuild.publication.protection-bypass-secret must be "
                 "a GitHub Actions secret name"
             )
+        post_ingest_action = publication_value.get("post-ingest-action")
+        if post_ingest_action is not None:
+            if (
+                not isinstance(post_ingest_action, str)
+                or re.fullmatch(
+                    r"\./\.github/actions/[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*",
+                    post_ingest_action,
+                )
+                is None
+            ):
+                raise ValueError(
+                    "tool.ggbuild.publication.post-ingest-action must be "
+                    "a local action under ./.github/actions/"
+                )
+            if index_url is None:
+                raise ValueError(
+                    "tool.ggbuild.publication.post-ingest-action requires "
+                    "index-url"
+                )
         publication = PublicationConfig(
-            repository, index_url, protection_bypass_secret
+            repository, index_url, protection_bypass_secret, post_ingest_action
         )
     project_table = document.get("project", {})
     project_name = (
