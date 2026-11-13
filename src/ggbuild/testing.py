@@ -452,6 +452,7 @@ def _create_test(
     installation: pathlib.Path,
     work_root: pathlib.Path,
     test_install_root: pathlib.Path | None,
+    dev_install_root: pathlib.Path | None = None,
 ) -> Test:
     return Test(
         archive=archive,
@@ -462,6 +463,7 @@ def _create_test(
         _installation_root=installation,
         _work_root=work_root,
         _test_install_root=test_install_root,
+        _dev_install_root=dev_install_root,
     )
 
 
@@ -477,6 +479,37 @@ def _extract_test_data_overlay(
     if test_data_archive is not None:
         extract_artifact(test_data_archive, extraction_root)
     return _test_data_root(installation, details)
+
+
+def _extract_dev_overlay(
+    *,
+    archive: pathlib.Path,
+    metadata: Mapping[str, Any],
+    work_root: pathlib.Path,
+) -> pathlib.Path | None:
+    """Extract a separate installation with the dev overlay applied."""
+    dev_archive = side_artifacts(archive, metadata).get("dev")
+    if dev_archive is None:
+        return None
+    details = metadata["contents"][dev_archive.name]
+    if details.get("overlay") is not True:
+        raise ValueError("artifact dev data must be an installation overlay")
+    installation = extract_artifact(archive, work_root / "dev-installation")
+    staging = work_root / "dev-overlay"
+    overlay = extract_artifact(dev_archive, staging)
+    for path in sorted(overlay.rglob("*")):
+        destination = installation / path.relative_to(overlay)
+        if path.is_dir() and not path.is_symlink():
+            destination.mkdir(exist_ok=True)
+            continue
+        if destination.exists() or destination.is_symlink():
+            raise ValueError(
+                "dev overlay collides with primary artifact path: "
+                f"{path.relative_to(overlay)}"
+            )
+        path.replace(destination)
+    shutil.rmtree(staging)
+    return installation
 
 
 # @lat: [[artifacts#Artifact Trust Pipeline#Recipe-Driven Artifact Tests]]
@@ -529,6 +562,9 @@ def run_test(  # ruff: ignore[too-many-locals]
             installation=installation,
             extraction_root=root / "installation",
         )
+        dev_install_root = _extract_dev_overlay(
+            archive=archive, metadata=metadata, work_root=root
+        )
         test = _create_test(
             archive=archive,
             metadata=metadata,
@@ -536,6 +572,7 @@ def run_test(  # ruff: ignore[too-many-locals]
             installation=installation,
             work_root=root,
             test_install_root=test_install_root,
+            dev_install_root=dev_install_root,
         )
         if bare_linux:
             _execute_bare_linux_test_script(recipe, test)

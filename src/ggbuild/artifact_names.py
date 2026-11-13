@@ -10,7 +10,7 @@ from typing import Literal
 
 import re
 
-type PublicArtifactRole = Literal["primary-archive", "dbgsym"]
+type PublicArtifactRole = Literal["primary-archive", "dbgsym", "dev"]
 
 
 def validate_publication_tag(tag: str) -> str:
@@ -31,7 +31,9 @@ def public_artifact_stem(
     """Return the public filename stem for one artifact role."""
     validate_publication_tag(tag)
     stem = f"{package}-{source_version}+{tag}-{target}"
-    return f"{stem}-dbgsym" if role == "dbgsym" else stem
+    if role == "primary-archive":
+        return stem
+    return f"{stem}-{role}"
 
 
 def public_artifact_name(

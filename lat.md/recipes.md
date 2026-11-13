@@ -50,6 +50,6 @@ When a build object is available, target `tar` is used so extraction semantics m
 
 Recipe hooks form a staged shell contract so package intent can be composed with target paths, flags, tools, and dependency environments.
 
-The major phases are prepare, configure, build, test-build, build-install, test-install, and final install selection. Built-in Autoconf, CMake, Meson, Make, Python, Rust, and Go helpers encode common conventions while retaining hook overrides for exceptional projects.
+The major phases are prepare, configure, build, test-build, build-install, test-install, dev-install, and final install selection. Built-in Autoconf, CMake, Meson, Make, Python, Rust, and Go helpers encode common conventions while retaining hook overrides for exceptional projects.
 
 Argument values prefixed with `!` are already shell expressions. Flag combinators preserve this distinction to avoid double quoting when composing environment variables, paths, C/C++ flags, linker flags, and Rust linker arguments.

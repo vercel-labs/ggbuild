@@ -80,6 +80,7 @@ class Test:
     _installation_root: pathlib.Path
     _work_root: pathlib.Path
     _test_install_root: pathlib.Path | None = None
+    _dev_install_root: pathlib.Path | None = None
 
     def get_build_install_dir(self, package: BasePackage) -> pathlib.Path:
         if package.unique_name != self._root_package:
@@ -96,6 +97,14 @@ class Test:
         if self._test_install_root is None:
             raise ValueError("artifact test sidecar is missing")
         return self._test_install_root
+
+    def get_dev_install_dir(self, package: BasePackage) -> pathlib.Path:
+        """Return a copy of the installation with the dev overlay applied."""
+        if package.unique_name != self._root_package:
+            raise ValueError("only the root package has a shipped dev overlay")
+        if self._dev_install_root is None:
+            raise ValueError("artifact dev overlay is missing")
+        return self._dev_install_root
 
     def get_temp_dir(self, package: BasePackage) -> pathlib.Path:
         name = pathlib.PurePath(package.unique_name)
@@ -290,6 +299,10 @@ class _BasePackageCore(PackageWithPrettyVersion):
         """Install prebuilt test harnesses into the test staging root."""
         return ""
 
+    def get_dev_install_script(self, build: targets.Build) -> str:
+        """Stage extra development files into the dev staging root."""
+        return ""
+
 
 class _BasePackageBuild(  # ruff: ignore[too-many-public-methods]
     _BasePackageCore
@@ -415,6 +428,22 @@ class _BasePackageBuild(  # ruff: ignore[too-many-public-methods]
             entries,
             imply_parents=True,
             root=build.get_test_install_dir(package, relative_to="fsroot"),
+        )
+
+    def get_file_dev_install_entries(self, build: targets.Build) -> list[str]:
+        return []
+
+    def get_dev_install_list_script(self, build: targets.Build) -> str:
+        entries = self.get_file_dev_install_entries(build)
+        if not entries:
+            return ""
+        package = cast("BasePackage", self)
+        return package.write_file_list_script(
+            build,
+            "dev-install",
+            entries,
+            imply_parents=True,
+            root=build.get_build_install_dir(package, relative_to="fsroot"),
         )
 
     def get_file_no_install_entries(self, build: targets.Build) -> list[str]:
@@ -1233,6 +1262,10 @@ class _BundledPackageFiles(_BundledPackageInstance):
     def get_file_test_install_entries(self, build: targets.Build) -> list[str]:
         entries = super().get_file_test_install_entries(build)
         return entries + self._read_install_entries(build, "test.install")
+
+    def get_file_dev_install_entries(self, build: targets.Build) -> list[str]:
+        entries = super().get_file_dev_install_entries(build)
+        return entries + self._read_install_entries(build, "dev.install")
 
     def get_prepare_script(self, build: targets.Build) -> str:
         script = ""

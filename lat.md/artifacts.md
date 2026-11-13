@@ -6,17 +6,19 @@ Artifacts advance from staged files to publication only through explicit invento
 
 Generic outputs pair distributions with metadata describing identity, target, source version, build details, and every emitted content file.
 
-One primary artifact may be accompanied by a test-data overlay and debug-symbol archive. Sidecars have unique semantic roles rather than filename-only discovery; publication requires canonical zstd tar names for the public primary and dbgsym files.
+One primary artifact may be accompanied by a test-data overlay, a development overlay, and a debug-symbol archive. Sidecars have unique semantic roles rather than filename-only discovery; publication requires canonical zstd tar names for the public primary, dev, and dbgsym files.
 
-Publication-context builds give each public archive one top-level directory matching its final release filename stem. Test data overlays the primary root, while debug symbols preserve artifact-relative paths beneath their own `-dbgsym` root.
+Publication-context builds give each public archive one top-level directory matching its final release filename stem. Test data overlays the primary root, the dev overlay holds primary-root-relative paths beneath its own `-dev` root for consumers to extract onto the primary installation, and debug symbols preserve artifact-relative paths beneath their own `-dbgsym` root.
 
 Test data is staged separately from shipped runtime files, then passed through the same binary path-repair and closure checks before packaging. Primary binaries are stripped after their optional debug symbols are extracted.
+
+The dev overlay combines files that a recipe's `dev.install` list selects from its install directory (headers, build-system fragments, static libraries) with anything its dev-install stage staged. It is relocated against a copy of the primary image, so its binaries resolve bundled libraries, and then split back out. Paths that collide with the primary artifact are rejected, so the overlay never replaces shipped files. Debug symbols for dev binaries join the dbgsym archive.
 
 ## Recipe-Driven Artifact Tests
 
 A test executes the exact hook of the registered recipe release named by artifact metadata, against an extracted completed artifact rather than a build tree.
 
-Normal tests require an exact target/host match. The environment prepends artifact binaries and libraries, gives the hook an isolated home and package work directory, and exposes only root-package install and test-data paths through the `Test` API.
+Normal tests require an exact target/host match. The environment prepends artifact binaries and libraries, gives the hook an isolated home and package work directory, and exposes only root-package install, test-data, and dev-overlay paths through the `Test` API. When a dev overlay exists, it is applied to a second, separate extraction of the primary artifact, so the primary installation is still tested on its own.
 
 Archive extraction rejects traversal, unsafe links, hard links, devices, and unsupported members. A successful result deterministically binds recipe, source version, target, and the primary archive SHA-256; failures produce no reusable success.
 
@@ -36,7 +38,7 @@ The record verifies the test node's sole artifact dependency, recomputes the res
 
 For publication runs, validation also opens each public tarball and requires one safe top-level directory matching the role's planned public stem. Archives are never repacked after native testing, so the approved and released bytes remain identical.
 
-Private metadata, test data, and test results remain in the snapshot manifest for provenance but are not uploaded as public distributions.
+Public roles are the primary archive, the dbgsym archive, and at most one dev overlay. Private metadata, test data, and test results remain in the snapshot manifest for provenance but are not uploaded as public distributions.
 
 ## Complete Snapshot Publication
 

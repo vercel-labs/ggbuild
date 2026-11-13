@@ -35,7 +35,7 @@ from ggbuild.node_cache import policy_for, unmatched_patterns
 from ggbuild.targets.generic.output import BuildOutputParser
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
 
     from lograil import ProgressHandle
 
@@ -52,6 +52,7 @@ _PACKAGE_STAGE_PROCESSES = {
     "test_build": "building tests",
     "build_install": "staging",
     "test_install": "staging tests",
+    "dev_install": "staging development files",
     "install": "staging",
 }
 _COMPRESSION_CHUNK_SIZE = 1024 * 1024
@@ -121,7 +122,7 @@ def _copy_compressed(
         compression_progress.advance(len(chunk))
 
 
-class Build(targets.Build):
+class Build(targets.Build):  # ruff: ignore[too-many-public-methods]
     _srcroot: pathlib.Path
     _pkgroot: pathlib.Path
 
@@ -148,6 +149,7 @@ class Build(targets.Build):
         self._tmproot = self._artifactroot / "tmp"
         self._installroot = self._artifactroot / "install"
         self._testinstallroot = self._artifactroot / "test-install"
+        self._devinstallroot = self._artifactroot / "dev-install"
 
         self._checkpoint_root = self._droot / ".ggbuild-checkpoints"
         self._checkpoint_manifest = self._checkpoint_root / "manifest.json"
@@ -263,6 +265,7 @@ class Build(targets.Build):
                     "test_build",
                     "build_install",
                     "test_install",
+                    "dev_install",
                     "install",
                 )
             }
@@ -368,6 +371,7 @@ class Build(targets.Build):
             "test_build",
             "build_install",
             "test_install",
+            "dev_install",
             "install",
         ):
             if old_scripts.get(stage) != new_scripts.get(stage):
@@ -658,6 +662,19 @@ class Build(targets.Build):
             relative_to_package=relative_to_package or package,
         )
 
+    def get_dev_install_dir(
+        self,
+        package: packages.BasePackage,
+        *,
+        relative_to: targets.Location = "sourceroot",
+        relative_to_package: packages.BasePackage | None = None,
+    ) -> pathlib.Path:
+        return self.get_dir(
+            self._devinstallroot / package.name,
+            relative_to=relative_to,
+            relative_to_package=relative_to_package or package,
+        )
+
     def _get_tarball_tpl(self, package: packages.BasePackage) -> str:
         rp = self._root_pkg
         version = f"{rp.name}_{rp.version.text}"
@@ -779,6 +796,7 @@ class Build(targets.Build):
             "test_build",
             "build_install",
             "test_install",
+            "dev_install",
             "install",
         )
         start = stages.index(stage)
@@ -799,12 +817,7 @@ class Build(targets.Build):
                 )
                 if install_dir.exists():
                     shutil.rmtree(install_dir)
-            if candidate_start <= stages.index("test_install"):
-                test_install_dir = self.get_test_install_dir(
-                    candidate, relative_to="fsroot"
-                )
-                if test_install_dir.exists():
-                    shutil.rmtree(test_install_dir)
+            self._remove_staging_dirs(candidate, stages[candidate_start:])
             for candidate_stage in stages[candidate_start:]:
                 self._package_marker(candidate, candidate_stage).unlink(
                     missing_ok=True
@@ -815,6 +828,21 @@ class Build(targets.Build):
         for candidate in self._installable:
             self._package_marker(candidate, "install").unlink(missing_ok=True)
         self._invalidate_checkpoints("package")
+
+    def _remove_staging_dirs(
+        self,
+        package: packages.BasePackage,
+        stages: Sequence[str],
+    ) -> None:
+        for stage, get_staging_dir in (
+            ("test_install", self.get_test_install_dir),
+            ("dev_install", self.get_dev_install_dir),
+        ):
+            if stage not in stages:
+                continue
+            staging_dir = get_staging_dir(package, relative_to="fsroot")
+            if staging_dir.exists():
+                shutil.rmtree(staging_dir)
 
     def _validate_package_checkpoints(self) -> None:
         if not self._keepwork:
@@ -933,6 +961,7 @@ class Build(targets.Build):
                 "test_build",
                 "build_install",
                 "test_install",
+                "dev_install",
             ):
                 script = self.render_package_script(package, stage)
                 if not script.strip():
@@ -1401,7 +1430,8 @@ class Build(targets.Build):
         archive_root = self.artifact_archive_root
         archives_abs = self.get_intermediate_output_dir(relative_to="fsroot")
         layout = pkg.get_package_layout(self)
-        dbgsym_root = self._dbgsym_artifact_root()
+        dev_root = self._dev_artifact_root()
+        dbgsym_root = self._dbgsym_artifact_root(dev_root=dev_root)
         with lifecycle_stage(
             "package/archive",
             process="packaging",
@@ -1423,6 +1453,7 @@ class Build(targets.Build):
                 archive_name,
                 archive_root,
                 archives_abs,
+                dev_root=dev_root,
                 dbgsym_root=dbgsym_root,
             )
             installrefs.extend(side_refs)
@@ -1448,6 +1479,7 @@ class Build(targets.Build):
         archive_root: str,
         archives: pathlib.Path,
         *,
+        dev_root: pathlib.Path | None = None,
         dbgsym_root: pathlib.Path | None,
     ) -> tuple[list[str], dict[str, dict[str, object]]]:
         archives.mkdir(parents=True, exist_ok=True)
@@ -1455,6 +1487,8 @@ class Build(targets.Build):
         test_data_root = self._test_data_root()
         if test_data_root is not None:
             side_artifacts["test-data"] = test_data_root
+        if dev_root is not None:
+            side_artifacts["dev"] = dev_root
         if dbgsym_root is not None:
             if "dbgsym" in side_artifacts:
                 raise ValueError("artifact side role 'dbgsym' is reserved")
@@ -1472,7 +1506,7 @@ class Build(targets.Build):
                     pathlib.Path(archive_root) / ".ggbuild-test-data"
                     if role == "test-data"
                     else pathlib.Path(
-                        f"{archive_root}-dbgsym"
+                        f"{archive_root}-{role}"
                         if archive_root != archive_name
                         else role
                     )
@@ -1491,6 +1525,8 @@ class Build(targets.Build):
             if role == "test-data":
                 contents[ref]["overlay"] = True
                 contents[ref]["root"] = ".ggbuild-test-data"
+            elif role == "dev":
+                contents[ref]["overlay"] = True
         return refs, contents
 
     def _test_data_root(self) -> pathlib.Path | None:
@@ -1567,21 +1603,137 @@ class Build(targets.Build):
         )
         return test_root
 
-    def _dbgsym_artifact_root(self) -> pathlib.Path | None:
+    def _dev_artifact_root(self) -> pathlib.Path | None:
+        """Stage the development overlay shipped beside the primary root."""
+        pkg = self._root_pkg
+        list_script = self.render_package_script(
+            pkg,
+            "dev_install_list",
+            # Like the test-data list, this runs with the install directory
+            # as its cwd, so keep the build-directory wrapper absolute.
+            relative_to="fsroot",
+        )
+        dev_install = self.get_dev_install_dir(pkg, relative_to="fsroot")
+        has_extras = dev_install.is_dir() and any(dev_install.iterdir())
+        if not list_script.strip() and not has_extras:
+            return None
+
+        temporary = self.get_temp_root(relative_to="fsroot")
+        staged = temporary / "dev-staged"
+        if staged.exists():
+            shutil.rmtree(staged)
+        staged.mkdir(parents=True)
+        if list_script.strip():
+            install_dir = self.get_build_install_dir(pkg, relative_to="fsroot")
+            file_list = (
+                self.get_temp_dir(pkg, relative_to="fsroot") / "dev.list"
+            )
+            file_list.write_text(
+                tools.cmd(
+                    *shlex.split(self.sh_get_command("bash")),
+                    "-c",
+                    list_script,
+                    cwd=install_dir,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            tools.cmd(
+                *shlex.split(
+                    self.sh_get_command("copy-tree", relative_to="fsroot")
+                ),
+                "--verbose",
+                f"--files-from={file_list}",
+                f"{install_dir}/",
+                staged,
+            )
+        if has_extras:
+            shutil.copytree(
+                dev_install, staged, symlinks=True, dirs_exist_ok=True
+            )
+        return self._postprocess_dev_root(staged)
+
+    def _postprocess_dev_root(self, staged: pathlib.Path) -> pathlib.Path:
+        """Relocate dev files against the primary image, then split them."""
+        temporary = self.get_temp_root(relative_to="fsroot")
+        image_root = self.get_image_root(relative_to="fsroot")
+        staged_files = sorted(
+            path.relative_to(staged)
+            for path in staged.rglob("*")
+            if path.is_file() or path.is_symlink()
+        )
+        collisions = [
+            path.as_posix()
+            for path in staged_files
+            if (image_root / path).exists() or (image_root / path).is_symlink()
+        ]
+        if collisions:
+            raise ValueError(
+                "dev overlay collides with primary artifact paths: "
+                + ", ".join(collisions)
+            )
+
+        dev_image = temporary / "dev-image"
+        if dev_image.exists():
+            shutil.rmtree(dev_image)
+        shutil.copytree(image_root, dev_image, symlinks=True)
+        shutil.copytree(staged, dev_image, symlinks=True, dirs_exist_ok=True)
+        self._fixup_binaries(
+            sorted(
+                path.relative_to(dev_image)
+                for path in dev_image.rglob("*")
+                if path.is_file() or path.is_symlink()
+            ),
+            image_root=dev_image,
+        )
+
+        prefix = self.get_bundle_install_prefix().relative_to("/")
+        dev_root = temporary / "dev"
+        if dev_root.exists():
+            shutil.rmtree(dev_root)
+        dev_root.mkdir(parents=True)
+        for path in staged_files:
+            source = dev_image / path
+            if not (source.exists() or source.is_symlink()):
+                # Binary fixup materializes shared libraries and drops
+                # their development symlinks.
+                continue
+            if not path.is_relative_to(prefix):
+                raise ValueError(
+                    f"dev overlay path is outside the bundle: {path}"
+                )
+            destination = dev_root / path.relative_to(prefix)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            source.replace(destination)
+        if not any(dev_root.iterdir()):
+            raise RuntimeError("dev overlay staged no files")
+        return dev_root
+
+    def _dbgsym_artifact_root(
+        self, *, dev_root: pathlib.Path | None = None
+    ) -> pathlib.Path | None:
         if not self.is_dbgsym_build:
             return None
         image_root = self.get_image_root(relative_to="fsroot")
         dbgsym_root = self.get_temp_root(relative_to="fsroot") / "dbgsym"
         dbgsym_root.mkdir(parents=True, exist_ok=True)
-        for path in sorted(image_root.rglob("*")):
-            if not path.is_file() or path.is_symlink():
-                continue
-            if not self.target.is_binary_code_file(self, path):
-                continue
-            relative = path.relative_to(image_root)
-            destination = dbgsym_root / relative
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            self._extract_dbgsym(path, destination)
+        roots = [(image_root, pathlib.Path())]
+        if dev_root is not None:
+            # Dev paths are relative to the primary root, while debug symbols
+            # keep image-relative paths.
+            roots.append((
+                dev_root,
+                self.get_bundle_install_prefix().relative_to("/"),
+            ))
+        for root, base in roots:
+            for path in sorted(root.rglob("*")):
+                if not path.is_file() or path.is_symlink():
+                    continue
+                if not self.target.is_binary_code_file(self, path):
+                    continue
+                destination = dbgsym_root / base / path.relative_to(root)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                self._extract_dbgsym(path, destination)
         return dbgsym_root
 
     def _extract_dbgsym(

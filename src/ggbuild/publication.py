@@ -42,9 +42,9 @@ PUBLICATION_RECORD = "ggbuild-publication.json"
 CHECKSUM_NAME = "SHA256SUMS"
 SNAPSHOT_NAME = "ggbuild-snapshot-v1.json"
 FileRole = Literal[
-    "primary-archive", "dbgsym", "test-data", "metadata", "test-result"
+    "primary-archive", "dbgsym", "dev", "test-data", "metadata", "test-result"
 ]
-PUBLIC_ROLES = frozenset({"primary-archive", "dbgsym"})
+PUBLIC_ROLES = frozenset({"primary-archive", "dbgsym", "dev"})
 
 
 def _file_entry(
@@ -119,6 +119,7 @@ def create_root_record(  # ruff: ignore[too-many-branches,too-many-locals,too-ma
     entries: list[dict[str, object]] = []
     primary = 0
     dbgsym = 0
+    dev = 0
     for filename, raw_details in sorted(contents.items()):
         if (
             not isinstance(filename, str)
@@ -141,6 +142,11 @@ def create_root_record(  # ruff: ignore[too-many-branches,too-many-locals,too-ma
             dbgsym += 1
             if not filename.endswith(".dbgsym.tar.zst"):
                 raise ValueError("dbgsym artifact filename is not canonical")
+        elif raw_role == "dev":
+            role = "dev"
+            dev += 1
+            if not filename.endswith(".dev.tar.zst"):
+                raise ValueError("dev artifact filename is not canonical")
         elif raw_role == "test-data":
             role = "test-data"
         else:
@@ -181,6 +187,8 @@ def create_root_record(  # ruff: ignore[too-many-branches,too-many-locals,too-ma
         raise ValueError("publication requires exactly one primary archive")
     if dbgsym != 1:
         raise ValueError("publication requires exactly one dbgsym archive")
+    if dev > 1:
+        raise ValueError("publication allows at most one dev archive")
     entries.extend((
         _file_entry(
             metadata_path(archive),
