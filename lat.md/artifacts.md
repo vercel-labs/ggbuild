@@ -12,7 +12,7 @@ Publication-context builds give each public archive one top-level directory matc
 
 Test data is staged separately from shipped runtime files, then passed through the same binary path-repair and closure checks before packaging. Primary binaries are stripped after their optional debug symbols are extracted.
 
-The dev overlay combines files that a recipe's `dev.install` list selects from its install directory (headers, build-system fragments, static libraries) with anything its dev-install stage staged. It is relocated against a copy of the primary image, so its binaries resolve bundled libraries, and then split back out. Paths that collide with the primary artifact are rejected, so the overlay never replaces shipped files. Debug symbols for dev binaries join the dbgsym archive.
+The dev overlay combines files that a recipe's `dev.install` list selects from its install directory (headers, build-system fragments, static libraries) with anything its dev-install stage staged. It is relocated against a copy of the primary image, so its binaries resolve bundled libraries, and then split back out. Paths that collide with the primary artifact are rejected, so the overlay never replaces shipped files. Debug symbols for dev binaries are extracted, and the binaries stripped, before relocation, so patchelf is always the last tool to rewrite them; the symbols join the dbgsym archive.
 
 ## Recipe-Driven Artifact Tests
 

@@ -398,6 +398,7 @@ def _dev_build(
     staged = tmp_path / "staged"
     build = object.__new__(Build)
     build._root_pkg = mock.Mock(name_slot="package")  # ruff: ignore[private-member-access]
+    build._build_dbgsym = False  # ruff: ignore[private-member-access]
     return build, image, staged
 
 
@@ -456,15 +457,66 @@ def test_dev_root_rejects_primary_collisions(tmp_path: pathlib.Path) -> None:
         build._postprocess_dev_root(staged)  # ruff: ignore[private-member-access]
 
 
-def test_dbgsym_root_includes_dev_binaries_at_image_paths(
+def test_dev_root_extracts_symbols_before_relocation(
+    tmp_path: pathlib.Path,
+) -> None:
+    build, image, staged = _dev_build(tmp_path)
+    driver = staged / "opt/package/lib/pgxs/pg_regress"
+    driver.parent.mkdir(parents=True)
+    driver.write_bytes(b"driver")
+    header = staged / "opt/package/include/header.h"
+    header.parent.mkdir(parents=True)
+    header.write_text("h", encoding="utf-8")
+    temporary = tmp_path / "temporary"
+    build._build_dbgsym = True  # ruff: ignore[private-member-access]
+    build._target = mock.Mock(  # ruff: ignore[private-member-access]
+        triple="x86_64-unknown-linux-gnu"
+    )
+    build._target.is_binary_code_file.side_effect = (  # ruff: ignore[private-member-access]
+        lambda _build, path: path.name == "pg_regress"
+    )
+    events: list[tuple[str, pathlib.Path]] = []
+
+    def extract(source: pathlib.Path, destination: pathlib.Path) -> None:
+        events.append(("extract", source))
+        destination.write_bytes(b"symbols")
+
+    def fixup(files: list[pathlib.Path], *, image_root: pathlib.Path) -> None:
+        del files
+        events.append(("fixup", image_root))
+
+    with (
+        mock.patch.object(build, "get_temp_root", return_value=temporary),
+        mock.patch.object(build, "get_image_root", return_value=image),
+        mock.patch.object(
+            build,
+            "get_bundle_install_prefix",
+            return_value=pathlib.Path("/opt/package"),
+        ),
+        mock.patch.object(build, "_extract_dbgsym", side_effect=extract),
+        mock.patch.object(build, "_fixup_binaries", side_effect=fixup),
+    ):
+        build._postprocess_dev_root(staged)  # ruff: ignore[private-member-access]
+
+    # patchelf must run last; binutils can corrupt its rewritten headers.
+    assert events == [
+        ("extract", driver),
+        ("fixup", temporary / "dev-image"),
+    ]
+    assert (
+        temporary / "dev-dbgsym/opt/package/lib/pgxs/pg_regress"
+    ).read_bytes() == b"symbols"
+
+
+def test_dbgsym_root_merges_dev_symbols_without_restripping(
     tmp_path: pathlib.Path,
 ) -> None:
     image = tmp_path / "image"
     (image / "opt/package/bin").mkdir(parents=True)
     (image / "opt/package/bin/program").write_bytes(b"binary")
-    dev = tmp_path / "dev"
-    (dev / "lib").mkdir(parents=True)
-    (dev / "lib/regress.so").write_bytes(b"library")
+    dev_dbgsym = tmp_path / "temporary/dev-dbgsym"
+    (dev_dbgsym / "opt/package/lib").mkdir(parents=True)
+    (dev_dbgsym / "opt/package/lib/regress.so").write_bytes(b"dev-symbols")
     build = object.__new__(Build)
     build._build_dbgsym = True  # ruff: ignore[private-member-access]
     build._target = mock.Mock(  # ruff: ignore[private-member-access]
@@ -481,17 +533,14 @@ def test_dbgsym_root_includes_dev_binaries_at_image_paths(
         mock.patch.object(
             build, "get_temp_root", return_value=tmp_path / "temporary"
         ),
-        mock.patch.object(
-            build,
-            "get_bundle_install_prefix",
-            return_value=pathlib.Path("/opt/package"),
-        ),
         mock.patch.object(build, "_extract_dbgsym", side_effect=extract),
     ):
-        root = build._dbgsym_artifact_root(dev_root=dev)  # ruff: ignore[private-member-access]
+        root = build._dbgsym_artifact_root(  # ruff: ignore[private-member-access]
+            dev_dbgsym_root=dev_dbgsym
+        )
 
     assert root is not None
-    assert calls == [
-        root / "opt/package/bin/program",
-        root / "opt/package/lib/regress.so",
-    ]
+    assert calls == [root / "opt/package/bin/program"]
+    assert (root / "opt/package/lib/regress.so").read_bytes() == (
+        b"dev-symbols"
+    )
