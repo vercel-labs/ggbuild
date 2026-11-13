@@ -121,7 +121,11 @@ def _two_root_plan() -> dict[str, Any]:
     return plan
 
 
-def _root(directory: pathlib.Path) -> pathlib.Path:
+def _root(
+    directory: pathlib.Path,
+    *,
+    dev: tuple[str, ...] = (),
+) -> pathlib.Path:
     archive = directory / "fixture.tar.zst"
     side = directory / "fixture.dbgsym.tar.zst"
     _write_zstd_tar(
@@ -134,19 +138,32 @@ def _root(directory: pathlib.Path) -> pathlib.Path:
         public_artifact_stem("fixture", "1.0", TARGET, TAG, role="dbgsym"),
         b"dbgsym",
     )
+    contents: dict[str, Any] = {
+        archive.name: {
+            "encoding": "zstd",
+            "type": "application/x-tar",
+        },
+        side.name: {
+            "artifact_role": "dbgsym",
+            "encoding": "zstd",
+            "type": "application/x-tar",
+        },
+    }
+    for name in dev:
+        _write_zstd_tar(
+            directory / name,
+            public_artifact_stem("fixture", "1.0", TARGET, TAG, role="dev"),
+            b"dev",
+        )
+        contents[name] = {
+            "artifact_role": "dev",
+            "encoding": "zstd",
+            "overlay": True,
+            "type": "application/x-tar",
+        }
     metadata_path(archive).write_text(
         canonical_json({
-            "contents": {
-                archive.name: {
-                    "encoding": "zstd",
-                    "type": "application/x-tar",
-                },
-                side.name: {
-                    "artifact_role": "dbgsym",
-                    "encoding": "zstd",
-                    "type": "application/x-tar",
-                },
-            },
+            "contents": contents,
             "name": "fixture",
             "source_version": "1.0",
             "target": TARGET,
@@ -296,6 +313,38 @@ def test_root_record_rejects_unexpected_missing_or_untested_bytes(
         create_root_record(_plan()["nodes"][1], tmp_path, publication_tag=TAG)
 
 
+def test_root_record_classifies_dev_overlay_as_public(
+    tmp_path: pathlib.Path,
+) -> None:
+    record = json.loads(
+        _root(tmp_path, dev=("fixture.dev.tar.zst",)).read_text(
+            encoding="utf-8"
+        )
+    )
+    roles = {item["logical_name"]: item["role"] for item in record["files"]}
+    assert roles["fixture.dev.tar.zst"] == "dev"
+    assert "dev" in publication.PUBLIC_ROLES
+    assert public_artifact_stem("fixture", "1.0", TARGET, TAG, role="dev") == (
+        f"fixture-1.0+{TAG}-{TARGET}-dev"
+    )
+
+
+@pytest.mark.parametrize(
+    ("dev", "message"),
+    [
+        (("fixture.dev.tar.zst", "other.dev.tar.zst"), "at most one dev"),
+        (("fixture.devel.tar.zst",), "dev artifact filename"),
+    ],
+)
+def test_root_record_rejects_duplicate_or_noncanonical_dev_overlay(
+    tmp_path: pathlib.Path,
+    dev: tuple[str, ...],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        _root(tmp_path, dev=dev)
+
+
 def test_publication_tag_comes_from_authoritative_run_start(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -400,6 +449,33 @@ def test_publish_dry_run_validates_complete_success(
         for item in snapshot["successful"][0]["files"]
         if item["role"] not in {"primary-archive", "dbgsym"}
     )
+
+
+def test_publish_dry_run_names_dev_overlay_release_asset(
+    tmp_path: pathlib.Path,
+) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    _root(root, dev=("fixture.dev.tar.zst",))
+    snapshot, tag = publish_github(
+        _plan(),
+        tmp_path,
+        _config(tmp_path),
+        expected_tag=TAG,
+        dry_run=True,
+        environment=_environment(),
+        client=Client(),
+    )
+    assert snapshot is not None
+    assert {
+        item["release_name"]
+        for item in snapshot["successful"][0]["files"]
+        if "release_name" in item
+    } == {
+        f"fixture-1.0+{tag}-{TARGET}.tar.zst",
+        f"fixture-1.0+{tag}-{TARGET}-dbgsym.tar.zst",
+        f"fixture-1.0+{tag}-{TARGET}-dev.tar.zst",
+    }
 
 
 def test_publish_complete_success_contains_every_expected_coordinate(

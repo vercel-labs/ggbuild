@@ -85,8 +85,7 @@ packages = ["src/ggbuild"]
 
 [tool.uv]
 default-groups = ["dev"]
-# First-party and selected tooling release cutoffs.
-exclude-newer-package = { ggt = "2026-08-21T23:59:59Z", ruff = "2026-07-24T00:00:00Z", ty = "2026-08-20T00:00:00Z", types-pyyaml = "2026-07-25T00:00:00Z", types-toml = "2026-07-25T00:00:00Z", zizmor = "2026-07-24T00:00:00Z" }
+index = [{ name = "pypi", url = "https://pypi.org/simple", default = true }]
 
 # ========================
 #           POE

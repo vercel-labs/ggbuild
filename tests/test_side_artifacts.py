@@ -357,3 +357,141 @@ def test_dbgsym_root_extracts_symbols_and_strips_primary(
 
     assert root == tmp_path / "temporary/dbgsym"
     assert calls == [(binary, root / "bin/program")]
+
+
+def test_dev_side_artifact_is_a_public_overlay(
+    tmp_path: pathlib.Path,
+) -> None:
+    dev = tmp_path / "dev"
+    (dev / "include").mkdir(parents=True)
+    (dev / "include/header.h").write_text("header", encoding="utf-8")
+    build = object.__new__(Build)
+
+    with mock.patch.object(build, "_test_data_root", return_value=None):
+        refs, contents = build._package_side_artifacts(  # ruff: ignore[private-member-access]
+            "fixture",
+            PUBLIC_ROOT,
+            tmp_path / "output",
+            dev_root=dev,
+            dbgsym_root=None,
+        )
+
+    assert refs == ["fixture.dev.tar.zst"]
+    assert contents[refs[0]]["artifact_role"] == "dev"
+    assert contents[refs[0]]["overlay"] is True
+    assert "root" not in contents[refs[0]]
+    extracted = tmp_path / "extracted"
+    extracted.mkdir()
+    _extract_zstd_tar(tmp_path / "output" / refs[0], extracted)
+    assert (
+        extracted / f"{PUBLIC_ROOT}-dev/include/header.h"
+    ).read_text() == "header"
+
+
+def _dev_build(
+    tmp_path: pathlib.Path,
+) -> tuple[Build, pathlib.Path, pathlib.Path]:
+    image = tmp_path / "image"
+    library = image / "opt/package/lib/libpq.so.5"
+    library.parent.mkdir(parents=True)
+    library.write_bytes(b"library")
+    staged = tmp_path / "staged"
+    build = object.__new__(Build)
+    build._root_pkg = mock.Mock(name_slot="package")  # ruff: ignore[private-member-access]
+    return build, image, staged
+
+
+def test_dev_root_relocates_against_image_and_ships_only_dev_files(
+    tmp_path: pathlib.Path,
+) -> None:
+    build, image, staged = _dev_build(tmp_path)
+    driver = staged / "opt/package/lib/pgxs/pg_regress"
+    driver.parent.mkdir(parents=True)
+    driver.write_bytes(b"driver")
+    (staged / "opt/package/include").mkdir(parents=True)
+    (staged / "opt/package/include/header.h").write_text("h", encoding="utf-8")
+    (staged / "opt/package/lib/libpq.so").symlink_to("libpq.so.5")
+    temporary = tmp_path / "temporary"
+
+    def fixup(files: list[pathlib.Path], *, image_root: pathlib.Path) -> None:
+        assert pathlib.Path("opt/package/lib/libpq.so.5") in files
+        assert pathlib.Path("opt/package/lib/pgxs/pg_regress") in files
+        # Shared library materialization drops development symlinks.
+        (image_root / "opt/package/lib/libpq.so").unlink()
+
+    with (
+        mock.patch.object(build, "get_temp_root", return_value=temporary),
+        mock.patch.object(build, "get_image_root", return_value=image),
+        mock.patch.object(
+            build,
+            "get_bundle_install_prefix",
+            return_value=pathlib.Path("/opt/package"),
+        ),
+        mock.patch.object(build, "_fixup_binaries", side_effect=fixup),
+    ):
+        root = build._postprocess_dev_root(staged)  # ruff: ignore[private-member-access]
+
+    assert root == temporary / "dev"
+    assert sorted(
+        path.relative_to(root).as_posix()
+        for path in root.rglob("*")
+        if not path.is_dir()
+    ) == ["include/header.h", "lib/pgxs/pg_regress"]
+    assert (image / "opt/package/lib/libpq.so.5").is_file()
+
+
+def test_dev_root_rejects_primary_collisions(tmp_path: pathlib.Path) -> None:
+    build, image, staged = _dev_build(tmp_path)
+    collision = staged / "opt/package/lib/libpq.so.5"
+    collision.parent.mkdir(parents=True)
+    collision.write_bytes(b"other")
+
+    with (
+        mock.patch.object(
+            build, "get_temp_root", return_value=tmp_path / "temporary"
+        ),
+        mock.patch.object(build, "get_image_root", return_value=image),
+        pytest.raises(ValueError, match="collides with primary"),
+    ):
+        build._postprocess_dev_root(staged)  # ruff: ignore[private-member-access]
+
+
+def test_dbgsym_root_includes_dev_binaries_at_image_paths(
+    tmp_path: pathlib.Path,
+) -> None:
+    image = tmp_path / "image"
+    (image / "opt/package/bin").mkdir(parents=True)
+    (image / "opt/package/bin/program").write_bytes(b"binary")
+    dev = tmp_path / "dev"
+    (dev / "lib").mkdir(parents=True)
+    (dev / "lib/regress.so").write_bytes(b"library")
+    build = object.__new__(Build)
+    build._build_dbgsym = True  # ruff: ignore[private-member-access]
+    build._target = mock.Mock(  # ruff: ignore[private-member-access]
+        triple="x86_64-unknown-linux-gnu"
+    )
+    build._target.is_binary_code_file.return_value = True  # ruff: ignore[private-member-access]
+    calls: list[pathlib.Path] = []
+
+    def extract(_source: pathlib.Path, destination: pathlib.Path) -> None:
+        calls.append(destination)
+
+    with (
+        mock.patch.object(build, "get_image_root", return_value=image),
+        mock.patch.object(
+            build, "get_temp_root", return_value=tmp_path / "temporary"
+        ),
+        mock.patch.object(
+            build,
+            "get_bundle_install_prefix",
+            return_value=pathlib.Path("/opt/package"),
+        ),
+        mock.patch.object(build, "_extract_dbgsym", side_effect=extract),
+    ):
+        root = build._dbgsym_artifact_root(dev_root=dev)  # ruff: ignore[private-member-access]
+
+    assert root is not None
+    assert calls == [
+        root / "opt/package/bin/program",
+        root / "opt/package/lib/regress.so",
+    ]

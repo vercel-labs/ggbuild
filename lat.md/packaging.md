@@ -20,7 +20,7 @@ Portable does not mean statically linked. The builder bundles required non-syste
 
 Each low-level build moves through preparation, source materialization, recipe stages, packaging preparation, target packaging, and artifact export.
 
-All recipe packages share one build state and path model, but each package gets isolated source, build, install, temporary, and test-install locations. In orchestrated node mode the installation image is redirected into a supplied sysroot so it can become a dependency bundle.
+All recipe packages share one build state and path model, but each package gets isolated source, build, install, temporary, test-install, and dev-install locations. In orchestrated node mode the installation image is redirected into a supplied sysroot so it can become a dependency bundle.
 
 The lifecycle always stops an isolated sccache server in a `finally` path, making compiler-cache acceleration subordinate to build correctness.
 

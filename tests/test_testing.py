@@ -271,6 +271,64 @@ def test_test_data_side_artifact_overlays_installation(
     ) == "staged"
 
 
+def _write_dev_overlay(archive: pathlib.Path, *names: str) -> None:
+    side = archive.with_name("tested__1.0__linux.dev.tar.zst")
+    raw = io.BytesIO()
+    with tarfile.open(fileobj=raw, mode="w") as tar:
+        for name in names:
+            data = name.encode()
+            member = tarfile.TarInfo(f"tested__1.0__linux-dev/{name}")
+            member.size = len(data)
+            tar.addfile(member, io.BytesIO(data))
+    side.write_bytes(zstandard.ZstdCompressor().compress(raw.getvalue()))
+    metadata = json.loads(metadata_path(archive).read_text(encoding="utf-8"))
+    metadata["contents"][side.name] = {
+        "artifact_role": "dev",
+        "encoding": "zstd",
+        "overlay": True,
+        "type": "application/x-tar",
+    }
+    metadata_path(archive).write_text(json.dumps(metadata), encoding="utf-8")
+
+
+def test_dev_side_artifact_overlays_a_separate_installation(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive = artifact(tmp_path)
+    _write_dev_overlay(archive, "include/header.h")
+    monkeypatch.setattr(
+        "ggbuild.testing.detect_host_target",
+        lambda: parse_target(TARGET),
+    )
+
+    run_test(archive, config=config(tmp_path), work_dir=tmp_path / "work")
+
+    installation = tmp_path / "work/installation/tested__1.0__linux"
+    dev = tmp_path / "work/dev-installation/tested__1.0__linux"
+    assert not (installation / "include").exists()
+    assert (dev / "payload").read_text(encoding="utf-8") == "ok"
+    assert (dev / "include/header.h").read_text(encoding="utf-8") == (
+        "include/header.h"
+    )
+    assert not (tmp_path / "work/dev-overlay").exists()
+
+
+def test_dev_side_artifact_rejects_primary_collisions(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive = artifact(tmp_path)
+    _write_dev_overlay(archive, "payload")
+    monkeypatch.setattr(
+        "ggbuild.testing.detect_host_target",
+        lambda: parse_target(TARGET),
+    )
+
+    with pytest.raises(ValueError, match="dev overlay collides"):
+        run_test(archive, config=config(tmp_path), work_dir=tmp_path / "work")
+
+
 @pytest.mark.parametrize(
     ("target", "library_variable"),
     [

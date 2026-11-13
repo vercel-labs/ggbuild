@@ -1576,6 +1576,15 @@ class _BuildSources(_BuildShell):
     ) -> pathlib.Path:
         raise NotImplementedError
 
+    def get_dev_install_dir(
+        self,
+        package: mpkg_base.BasePackage,
+        *,
+        relative_to: Location = "sourceroot",
+        relative_to_package: mpkg_base.BasePackage | None = None,
+    ) -> pathlib.Path:
+        raise NotImplementedError
+
     def get_tool_list(self) -> list[str]:
         tools = ["trim-install.py", "copy-tree.py"]
         if self.is_sccache_enabled:
