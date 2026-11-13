@@ -1431,7 +1431,11 @@ class Build(targets.Build):  # ruff: ignore[too-many-public-methods]
         archives_abs = self.get_intermediate_output_dir(relative_to="fsroot")
         layout = pkg.get_package_layout(self)
         dev_root = self._dev_artifact_root()
-        dbgsym_root = self._dbgsym_artifact_root(dev_root=dev_root)
+        dbgsym_root = self._dbgsym_artifact_root(
+            dev_dbgsym_root=(
+                self._dev_dbgsym_root() if dev_root is not None else None
+            )
+        )
         with lifecycle_stage(
             "package/archive",
             process="packaging",
@@ -1673,6 +1677,23 @@ class Build(targets.Build):  # ruff: ignore[too-many-public-methods]
                 + ", ".join(collisions)
             )
 
+        if self.is_dbgsym_build:
+            # Strip before relocation: binutils can corrupt binaries whose
+            # program headers patchelf has rewritten.
+            dev_dbgsym = self._dev_dbgsym_root()
+            if dev_dbgsym.exists():
+                shutil.rmtree(dev_dbgsym)
+            dev_dbgsym.mkdir(parents=True)
+            for path in staged_files:
+                binary = staged / path
+                if binary.is_symlink() or not self.target.is_binary_code_file(
+                    self, binary
+                ):
+                    continue
+                destination = dev_dbgsym / path
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                self._extract_dbgsym(binary, destination)
+
         dev_image = temporary / "dev-image"
         if dev_image.exists():
             shutil.rmtree(dev_image)
@@ -1709,31 +1730,32 @@ class Build(targets.Build):  # ruff: ignore[too-many-public-methods]
             raise RuntimeError("dev overlay staged no files")
         return dev_root
 
+    def _dev_dbgsym_root(self) -> pathlib.Path:
+        return self.get_temp_root(relative_to="fsroot") / "dev-dbgsym"
+
     def _dbgsym_artifact_root(
-        self, *, dev_root: pathlib.Path | None = None
+        self, *, dev_dbgsym_root: pathlib.Path | None = None
     ) -> pathlib.Path | None:
         if not self.is_dbgsym_build:
             return None
         image_root = self.get_image_root(relative_to="fsroot")
         dbgsym_root = self.get_temp_root(relative_to="fsroot") / "dbgsym"
         dbgsym_root.mkdir(parents=True, exist_ok=True)
-        roots = [(image_root, pathlib.Path())]
-        if dev_root is not None:
-            # Dev paths are relative to the primary root, while debug symbols
-            # keep image-relative paths.
-            roots.append((
-                dev_root,
-                self.get_bundle_install_prefix().relative_to("/"),
-            ))
-        for root, base in roots:
-            for path in sorted(root.rglob("*")):
-                if not path.is_file() or path.is_symlink():
-                    continue
-                if not self.target.is_binary_code_file(self, path):
-                    continue
-                destination = dbgsym_root / base / path.relative_to(root)
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                self._extract_dbgsym(path, destination)
+        for path in sorted(image_root.rglob("*")):
+            if not path.is_file() or path.is_symlink():
+                continue
+            if not self.target.is_binary_code_file(self, path):
+                continue
+            relative = path.relative_to(image_root)
+            destination = dbgsym_root / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            self._extract_dbgsym(path, destination)
+        if dev_dbgsym_root is not None and dev_dbgsym_root.is_dir():
+            # Dev symbols were extracted before relocation, at the same
+            # image-relative paths.
+            shutil.copytree(
+                dev_dbgsym_root, dbgsym_root, symlinks=True, dirs_exist_ok=True
+            )
         return dbgsym_root
 
     def _extract_dbgsym(
