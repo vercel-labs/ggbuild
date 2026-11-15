@@ -423,6 +423,41 @@ def test_planner_selects_latest_per_major_and_deduplicates(
     )
 
 
+@pytest.mark.parametrize(
+    ("selection", "expected"),
+    [
+        ("latest-per-major", ["1.1", "1.2", "2.0"]),
+        ("latest", ["1.1", "2.0"]),
+        ("all", ["1.1", "1.2", "2.0"]),
+    ],
+)
+def test_planner_builds_pinned_releases_alongside_latest(
+    tmp_path: pathlib.Path,
+    selection: str,
+    expected: list[str],
+) -> None:
+    config = dataclasses.replace(
+        fixture_config(tmp_path),
+        release_selection=cast("Any", selection),
+        pinned_releases=("1.1",),
+    )
+
+    plan = create_plan(config)
+
+    assert sorted({root["version"] for root in plan["roots"]}) == expected
+
+
+def test_planner_rejects_unregistered_pinned_release(
+    tmp_path: pathlib.Path,
+) -> None:
+    config = dataclasses.replace(
+        fixture_config(tmp_path), pinned_releases=("1.3",)
+    )
+
+    with pytest.raises(ValueError, match=r"not registered: 1\.3"):
+        create_plan(config)
+
+
 def test_sccache_policy_does_not_change_plan_cache_identity(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -1905,6 +1940,50 @@ environment = { MACOSX_DEPLOYMENT_TARGET = "14.0", CUSTOM = "yes" }
         docker_environment("aarch64-apple-darwin")
 
 
+@pytest.mark.parametrize(
+    ("pins", "expected"),
+    [("", ()), ('pinned-releases = ["1.1"]', ("1.1",))],
+)
+def test_pinned_releases_configuration(
+    tmp_path: pathlib.Path, pins: str, expected: tuple[str, ...]
+) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        f"""
+[tool.ggbuild]
+root-recipe = "tests.v2_recipe:Root"
+bundle-prefix = "fixture"
+{pins}
+
+[[tool.ggbuild.target]]
+triple = "x86_64-unknown-linux-gnu"
+""",
+        encoding="utf-8",
+    )
+
+    assert load_project(tmp_path).pinned_releases == expected
+
+
+@pytest.mark.parametrize("pins", ['"1.1"', '["1.1", "1.1"]', '[""]', "[1]"])
+def test_pinned_releases_must_be_unique_versions(
+    tmp_path: pathlib.Path, pins: str
+) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        f"""
+[tool.ggbuild]
+root-recipe = "tests.v2_recipe:Root"
+bundle-prefix = "fixture"
+pinned-releases = {pins}
+
+[[tool.ggbuild.target]]
+triple = "x86_64-unknown-linux-gnu"
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="pinned-releases"):
+        load_project(tmp_path)
+
+
 def test_workflow_max_concurrency_configuration(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -2599,6 +2678,70 @@ def test_multi_file_write_rolls_back_on_failure(
 
     assert first.read_text(encoding="utf-8") == "old first"
     assert second.read_text(encoding="utf-8") == "old second"
+
+
+def test_update_keeps_pinned_releases_without_rerolling_them(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Fixture(UpdateableBundledCAutoconfPackage):
+        title, ident = "Fixture", "update-pinned-fixture"
+        sources: ClassVar[list[str | package_sources.SourceDecl]] = [
+            {"url": "https://example.com/fixture-{version}.tar.gz"}
+        ]
+        update_policy: ClassVar[UpdatePolicy] = {
+            "type": "html-index",
+            "url": "https://example.com/",
+            "pattern": r"fixture-(.+)\.tar\.gz",
+        }
+
+        @classmethod
+        def discover_releases(cls) -> tuple[str, ...]:
+            return ("1.3",)
+
+    registered = (
+        Fixture("1.1", sha256="a" * 64),
+        Fixture("1.2", sha256="b" * 64),
+    )
+    monkeypatch.setattr(
+        "ggbuild.updater.registered_releases", lambda: registered
+    )
+    candidates = (
+        Fixture("1.0", sha256="c" * 64),
+        Fixture("1.3", sha256="d" * 64),
+    )
+    monkeypatch.setattr(
+        "ggbuild.updater._candidate_releases",
+        lambda _recipe, _instances, desired, _io: (
+            {"1.0": "c" * 64, "1.1": "a" * 64, "1.3": "d" * 64},
+            [item for item in candidates if item.source_version in desired],
+        ),
+    )
+    rewritten: list[dict[str, str]] = []
+    monkeypatch.setattr(
+        "ggbuild.updater.rewrite_declarations",
+        lambda _recipe, hashes, _texts: rewritten.append(hashes),
+    )
+    collected: list[list[str]] = []
+
+    def collect(
+        additions: list[ggbuild_packages.BundledPackage], *_args: object
+    ) -> list[object]:
+        collected.append([item.source_version for item in additions])
+        return []
+
+    monkeypatch.setattr("ggbuild.updater._collect_patch_updates", collect)
+    monkeypatch.setattr(
+        "ggbuild.updater.write_transaction", lambda _texts: None
+    )
+
+    result = update_releases(io=mock.Mock(), pinned={Fixture: ("1.0", "1.1")})
+
+    assert [change.current for change in result.releases] == [
+        ("1.0", "1.1", "1.3")
+    ]
+    assert rewritten == [{"1.0": "c" * 64, "1.1": "a" * 64, "1.3": "d" * 64}]
+    # The newly pinned 1.0 is registered but never rerolled.
+    assert collected == [["1.3"]]
 
 
 def test_update_check_only_discovers_releases(

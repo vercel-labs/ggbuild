@@ -4,13 +4,15 @@ The project layer turns declarative policy and registered releases into the same
 
 ## Project and Target Policy
 
-`[tool.ggbuild]` names the root recipe, release-selection policy, target triples, build options, cache policy, workflow settings, and optional publication destination.
+`[tool.ggbuild]` names the root recipe, release-selection policy, optional pinned releases, target triples, build options, cache policy, workflow settings, and optional publication destination.
 
 Target triples supply conservative defaults: Linux uses target-owned Docker environments, macOS and Windows use matching hosted runners, and macOS sets a deployment floor. Projects may override runner, execution mode, and environment without replacing the target's packaging behavior.
 
 ## Canonical Build Plan
 
 The versioned JSON plan is the authority shared by planning, local scheduling, CI jobs, cache lookup, testing, and publication.
+
+Selection keeps the newest registered release (`latest`) or the newest of each major (`latest-per-major`), plus every `pinned-releases` entry, which lets projects keep building specific point releases beside current ones; `all` already includes them. A pin without a registered release is an error.
 
 For every target and selected root release, the planner resolves the registered bundled dependency closure and creates three node roles: `bundle` for one dependency installation, `artifact` for a root distribution, and optional `test` for its recipe hook.
 

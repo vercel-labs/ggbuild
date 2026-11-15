@@ -81,14 +81,26 @@ def selected_releases(
         raise ValueError(
             f"root recipe {config.root_recipe} has no registered releases"
         )
+    registered = {release.source_version for release in releases}
+    missing = [pin for pin in config.pinned_releases if pin not in registered]
+    if missing:
+        raise ValueError(
+            "pinned releases are not registered: " + ", ".join(missing)
+        )
     if config.release_selection == "all":
         return releases
     if config.release_selection == "latest":
-        return (releases[-1],)
-    by_major: dict[int, list[packages.BundledPackage]] = defaultdict(list)
-    for release in releases:
-        by_major[release.version.major].append(release)
-    return tuple(by_major[major][-1] for major in sorted(by_major))
+        latest = {releases[-1].source_version}
+    else:
+        by_major: dict[int, list[packages.BundledPackage]] = defaultdict(list)
+        for release in releases:
+            by_major[release.version.major].append(release)
+        latest = {by_major[major][-1].source_version for major in by_major}
+    # Pinned releases build alongside the newest release of each major.
+    selected = latest | set(config.pinned_releases)
+    return tuple(
+        release for release in releases if release.source_version in selected
+    )
 
 
 def release_for(
