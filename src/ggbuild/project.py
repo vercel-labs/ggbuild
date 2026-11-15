@@ -88,6 +88,7 @@ class ProjectConfig:
     build_options: BuildOptions
     sccache: SccacheConfig = SccacheConfig()
     publication: PublicationConfig | None = None
+    pinned_releases: tuple[str, ...] = ()
 
     @property
     def target_map(self) -> dict[str, TargetConfig]:
@@ -177,6 +178,16 @@ def load_project(  # ruff: ignore[too-many-branches, too-many-locals,too-many-st
     selection = config.get("release-selection", "latest-per-major")
     if selection not in {"all", "latest", "latest-per-major"}:
         raise ValueError("tool.ggbuild.release-selection is invalid")
+    raw_pins = config.get("pinned-releases", [])
+    if (
+        not isinstance(raw_pins, list)
+        or not all(isinstance(pin, str) and pin for pin in raw_pins)
+        or len(set(raw_pins)) != len(raw_pins)
+    ):
+        raise ValueError(
+            "tool.ggbuild.pinned-releases must be a list of unique "
+            "source versions"
+        )
     bundle_prefix = config.get("bundle-prefix")
     if not isinstance(bundle_prefix, str) or not bundle_prefix:
         raise TypeError("tool.ggbuild.bundle-prefix must be a non-empty string")
@@ -317,4 +328,5 @@ def load_project(  # ruff: ignore[too-many-branches, too-many-locals,too-many-st
         build_options=build_options,
         sccache=sccache,
         publication=publication,
+        pinned_releases=tuple(raw_pins),
     )

@@ -8,6 +8,8 @@ Updateable recipes declare how to discover their complete desired registered-rel
 
 Built-in policies support stable GitHub releases and version patterns in HTML indexes; recipes may override discovery to retain several supported major lines. Check mode reports drift without downloading archives, rerolling patches, or writing files.
 
+The project's `pinned-releases` always join the root recipe's desired set, so updates never drop a pinned point release. A pin that isn't registered yet is downloaded and hashed like a new release but never rerolled: it keeps the patch variants that already select at its version.
+
 New releases must resolve to one HTTPS archive. ggbuild downloads and hashes it, then rewrites standardized release constructor blocks so the source version and SHA-256 remain reviewable code.
 
 ## Transactional Recipe Updates

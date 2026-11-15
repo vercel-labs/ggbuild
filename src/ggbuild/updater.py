@@ -33,6 +33,8 @@ from ggbuild import packages, patches as package_patches
 from ggbuild.packages import repository
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from cleo.io import io as cleo_io
 
 
@@ -282,13 +284,14 @@ class UpdateResult:
 def _desired_releases(
     recipe: type[packages.BundledPackage],
     package: packages.BundledPackage,
+    pinned: tuple[str, ...] = (),
 ) -> tuple[str, ...]:
     if not issubclass(recipe, UpdateablePackage):
         raise TypeError(f"{package.name} is not updateable")
-    desired = tuple(sorted(set(recipe.discover_releases()), key=Version))
-    if not desired:
+    discovered = set(recipe.discover_releases())
+    if not discovered:
         raise ValueError(f"{package.name} release discovery returned nothing")
-    return desired
+    return tuple(sorted(discovered | set(pinned), key=Version))
 
 
 def _candidate_releases(
@@ -359,8 +362,14 @@ def _collect_patch_updates(
 
 
 def update_releases(
-    *, check: bool = False, io: cleo_io.IO | None = None
+    *,
+    check: bool = False,
+    io: cleo_io.IO | None = None,
+    pinned: Mapping[type[packages.BundledPackage], tuple[str, ...]]
+    | None = None,
 ) -> UpdateResult:
+    """Update registered releases, keeping each recipe's pinned versions."""
+    pinned = pinned or {}
     grouped: dict[
         type[packages.BundledPackage], list[packages.BundledPackage]
     ] = {}
@@ -377,7 +386,8 @@ def update_releases(
         previous = tuple(
             sorted((item.source_version for item in instances), key=Version)
         )
-        desired = _desired_releases(recipe, package)
+        recipe_pins = pinned.get(recipe, ())
+        desired = _desired_releases(recipe, package, recipe_pins)
         if desired == previous:
             continue
         changes.append(ReleaseChange(str(package.name), previous, desired))
@@ -388,8 +398,19 @@ def update_releases(
 
         hashes, candidates = _candidate_releases(recipe, instances, desired, io)
         rewrite_declarations(recipe, hashes, texts)
+        # Pinned releases keep the patch variants that already match them;
+        # only newly discovered releases are rerolled from older bases.
         rerolled.extend(
-            _collect_patch_updates(candidates, instances, io, texts)
+            _collect_patch_updates(
+                [
+                    item
+                    for item in candidates
+                    if item.source_version not in recipe_pins
+                ],
+                instances,
+                io,
+                texts,
+            )
         )
 
     if check and changes:

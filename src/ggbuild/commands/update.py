@@ -27,9 +27,13 @@ class Update(base.Command):
 
     def handle(self) -> int:
         config = load_project()
-        load_recipe(config.root_recipe)
+        root = load_recipe(config.root_recipe)
         check = bool(self.option("check"))
-        result = update_releases(check=check, io=self.io)
+        result = update_releases(
+            check=check,
+            io=self.io,
+            pinned={root: config.pinned_releases},
+        )
         if check:
             check_generated(config)
             return 0
